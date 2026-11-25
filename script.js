@@ -27,8 +27,7 @@ const conexoes = [
 ];
 
 const LIMITES = {
-  indicador: { minimo: 0, maximo: 180 },
-  dedao: { minimo: 0, maximo: 180 }
+  indicador: { minimo: 0, maximo: 180 }
 };
 
 const INTERVALO_ENVIO = 100;
@@ -38,6 +37,7 @@ let portaSerial = null;
 let escritorSerial = null;
 let leitorSerial = null;
 let hands = null;
+
 let conectado = false;
 let lendoSerial = false;
 let ultimaMensagem = "";
@@ -79,6 +79,7 @@ function desenharMao(mao) {
       0,
       Math.PI * 2
     );
+
     ctx.fillStyle = i === 0 ? "#ffcc00" : "#ffffff";
     ctx.fill();
   });
@@ -104,10 +105,14 @@ function calcularAngulo(a, b, c) {
   return Math.acos(cos) * 180 / Math.PI;
 }
 
-function mapearParaServo(flexao, nome) {
-  const limites = LIMITES[nome];
+function mapearParaServo(flexao) {
+  const limites = LIMITES.indicador;
 
-  const proporcao = limitar((180 - flexao) / 110, 0, 1);
+  const proporcao = limitar(
+    (180 - flexao) / 110,
+    0,
+    1
+  );
 
   return Math.round(
     limites.minimo +
@@ -116,12 +121,14 @@ function mapearParaServo(flexao, nome) {
 }
 
 function calcularAngulos(mao) {
-  const anguloIndicador = calcularAngulo(mao[5], mao[6], mao[7]);
-  const anguloDedao = calcularAngulo(mao[2], mao[3], mao[4]);
+  const anguloIndicador = calcularAngulo(
+    mao[5],
+    mao[6],
+    mao[7]
+  );
 
   return {
-    indicador: mapearParaServo(anguloIndicador, "indicador"),
-    dedao: mapearParaServo(anguloDedao, "dedao"),
+    indicador: mapearParaServo(anguloIndicador),
     flexaoIndicador: Math.round(180 - anguloIndicador)
   };
 }
@@ -129,10 +136,9 @@ function calcularAngulos(mao) {
 function angulosMudaram(novos, antigos) {
   if (!antigos) return true;
 
-  return (
-    Math.abs(novos.indicador - antigos.indicador) >= MUDANCA_MINIMA ||
-    Math.abs(novos.dedao - antigos.dedao) >= MUDANCA_MINIMA
-  );
+  return Math.abs(
+    novos.indicador - antigos.indicador
+  ) >= MUDANCA_MINIMA;
 }
 
 async function enviarMensagem(mensagem) {
@@ -172,9 +178,10 @@ async function enviarAngulos(angulos, forcar = false) {
   const agora = Date.now();
 
   if (!forcar && agora - ultimoEnvio < INTERVALO_ENVIO) return;
+
   if (!forcar && !angulosMudaram(angulos, ultimosAngulos)) return;
 
-  const mensagem = `${angulos.indicador},${angulos.dedao}`;
+  const mensagem = String(angulos.indicador);
 
   if (!forcar && mensagem === ultimaMensagem) return;
 
@@ -185,11 +192,7 @@ async function enviarAngulos(angulos, forcar = false) {
   if (enviado) {
     ultimaMensagem = mensagem;
     ultimoEnvio = Date.now();
-
-    ultimosAngulos = {
-      indicador: angulos.indicador,
-      dedao: angulos.dedao
-    };
+    ultimosAngulos = { ...angulos };
   }
 }
 
@@ -199,13 +202,12 @@ async function testarServos(angulo) {
   modoTeste = true;
 
   const enviado = await enviarAngulos({
-    indicador: angulo,
-    dedao: angulo
+    indicador: angulo
   }, true);
 
   if (enviado) {
     statusArduino.textContent =
-      `Teste enviado: indicador ${angulo}°, dedão ${angulo}°.`;
+      `Teste enviado: indicador ${angulo}°.`;
 
     setTimeout(() => {
       modoTeste = false;
@@ -251,6 +253,7 @@ async function lerRespostasArduino() {
 
       for (const linha of linhas) {
         const resposta = linha.trim();
+
         if (!resposta) continue;
 
         console.log("Arduino respondeu:", resposta);
@@ -298,17 +301,20 @@ if (botaoConectar) {
       }
 
       escritorSerial = portaSerial.writable.getWriter();
+
       conectado = true;
       ultimaMensagem = "";
       ultimosAngulos = null;
 
       atualizarBotoes();
-      statusArduino.textContent = "Arduino conectado. Teste os servos.";
+
+      statusArduino.textContent = "Arduino conectado. Controle pelo indicador.";
 
       lerRespostasArduino();
 
     } catch (erro) {
       console.error(erro);
+
       statusArduino.textContent = "Erro ao conectar: " + erro.message;
 
       conectado = false;
@@ -343,7 +349,9 @@ if (botaoDesconectar) {
 
     } catch (erro) {
       console.error(erro);
-      statusArduino.textContent = "Erro ao desconectar: " + erro.message;
+
+      statusArduino.textContent =
+        "Erro ao desconectar: " + erro.message;
 
     } finally {
       atualizarBotoes();
@@ -377,16 +385,21 @@ function aoDetectar(resultado) {
   const mao = maos[0];
 
   desenharMao(mao);
+
   pontosTexto.textContent = `${mao.length} / 21`;
 
   const angulos = calcularAngulos(mao);
+
   ultimoAnguloCalculado = angulos;
 
-  flexaoTexto.textContent = `${angulos.flexaoIndicador}°`;
-  anguloTexto.textContent = `${angulos.indicador}°`;
+  flexaoTexto.textContent =
+    `${angulos.flexaoIndicador}°`;
+
+  anguloTexto.textContent =
+    `${angulos.indicador}°`;
 
   status.textContent = conectado
-    ? `Controle ativo — indicador ${angulos.indicador}°, dedão ${angulos.dedao}°.`
+    ? `Controle ativo — indicador ${angulos.indicador}°.`
     : "Mão detectada — conecte o Arduino.";
 
   enviarAngulos(angulos);
@@ -411,7 +424,9 @@ async function iniciarMediaPipe() {
     });
 
     hands.onResults(aoDetectar);
-    status.textContent = "Reconhecimento carregado. Mostre sua mão.";
+
+    status.textContent =
+      "Reconhecimento carregado. Mostre sua mão.";
 
     async function analisar() {
       if (video.readyState >= 2 && hands) {
@@ -429,6 +444,7 @@ async function iniciarMediaPipe() {
 
   } catch (erro) {
     console.error(erro);
+
     status.textContent = "Erro no MediaPipe: " + erro.message;
   }
 }
@@ -436,7 +452,9 @@ async function iniciarMediaPipe() {
 async function iniciarCamera() {
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("A câmera exige uma página HTTPS ou contexto seguro.");
+      throw new Error(
+        "A câmera exige uma página HTTPS ou contexto seguro."
+      );
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -449,19 +467,26 @@ async function iniciarCamera() {
     });
 
     video.srcObject = stream;
+
     await video.play();
 
-    if (placeholder) placeholder.classList.add("hidden");
+    if (placeholder) {
+      placeholder.classList.add("hidden");
+    }
 
     status.textContent = "Carregando reconhecimento da mão...";
+
     iniciarMediaPipe();
 
   } catch (erro) {
     console.error(erro);
-    status.textContent = "Erro ao iniciar câmera: " + erro.message;
+
+    status.textContent =
+      "Erro ao iniciar câmera: " + erro.message;
 
     if (placeholder) {
-      placeholder.textContent = "Não foi possível iniciar a câmera.";
+      placeholder.textContent =
+        "Não foi possível iniciar a câmera.";
     }
   }
 }
