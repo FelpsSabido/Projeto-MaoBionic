@@ -26,8 +26,9 @@ const conexoes = [
   [5, 9], [9, 13], [13, 17]
 ];
 
-const INTERVALO_ENVIO = 100;
-const MUDANCA_MINIMA = 2;
+const INTERVALO_ENVIO = 30;
+const MUDANCA_MINIMA = 1;
+const SUAVIZACAO = 0.45;
 
 let portaSerial = null;
 let escritorSerial = null;
@@ -38,7 +39,9 @@ let lendoSerial = false;
 let ultimaMensagem = "";
 let ultimoEnvio = 0;
 let ultimoAnguloEnviado = null;
+let anguloSuavizado = null;
 let modoTeste = false;
+let filaEnvio = Promise.resolve();
 
 function limitar(valor, minimo, maximo) {
   return Math.max(minimo, Math.min(maximo, valor));
@@ -111,21 +114,14 @@ function calcularAnguloIndicador(mao) {
     1
   );
 
-  const anguloServo = Math.round(proporcao * 180);
-
   return {
-    servo: anguloServo,
+    servo: Math.round(proporcao * 180),
     flexao: Math.round(180 - anguloArticulacao)
   };
 }
 
 async function enviarMensagem(mensagem) {
-  if (!conectado || !escritorSerial) {
-    if (statusArduino) {
-      statusArduino.textContent = "Conecte o Arduino primeiro.";
-    }
-    return false;
-  }
+  if (!conectado || !escritorSerial) return false;
 
   try {
     await escritorSerial.write(
@@ -136,11 +132,9 @@ async function enviarMensagem(mensagem) {
       statusArduino.textContent = "Comando enviado: " + mensagem;
     }
 
-    console.log("Enviado ao Arduino:", mensagem);
     return true;
-
   } catch (erro) {
-    console.error("Erro ao enviar comando:", erro);
+    console.error("Erro ao enviar:", erro);
 
     if (statusArduino) {
       statusArduino.textContent = "Erro no envio: " + erro.message;
@@ -150,65 +144,67 @@ async function enviarMensagem(mensagem) {
   }
 }
 
-async function enviarAngulo(angulo, forcar = false) {
-  if (!conectado || !escritorSerial) return;
+function enviarAngulo(angulo, forcar = false) {
+  if (!conectado || !escritorSerial) return Promise.resolve(false);
+  if (modoTeste && !forcar) return Promise.resolve(false);
 
   const agora = Date.now();
 
-  if (!forcar && agora - ultimoEnvio < INTERVALO_ENVIO) return;
+  if (!forcar && agora - ultimoEnvio < INTERVALO_ENVIO) {
+    return Promise.resolve(false);
+  }
 
   if (
     !forcar &&
     ultimoAnguloEnviado !== null &&
     Math.abs(angulo - ultimoAnguloEnviado) < MUDANCA_MINIMA
   ) {
-    return;
+    return Promise.resolve(false);
   }
-
-  if (modoTeste && !forcar) return;
 
   const mensagem = String(angulo);
 
-  if (!forcar && mensagem === ultimaMensagem) return;
-
-  const enviado = await enviarMensagem(mensagem);
-
-  if (enviado) {
-    ultimaMensagem = mensagem;
-    ultimoEnvio = Date.now();
-    ultimoAnguloEnviado = angulo;
+  if (!forcar && mensagem === ultimaMensagem) {
+    return Promise.resolve(false);
   }
+
+  ultimoEnvio = agora;
+  ultimoAnguloEnviado = angulo;
+  ultimaMensagem = mensagem;
+
+  filaEnvio = filaEnvio.then(async () => {
+    return await enviarMensagem(mensagem);
+  }).catch(erro => {
+    console.error("Fila serial:", erro);
+    return false;
+  });
+
+  return filaEnvio;
 }
 
 async function testarServo(angulo) {
   if (!conectado) return;
 
   modoTeste = true;
-
   const enviado = await enviarAngulo(angulo, true);
 
-  if (enviado) {
-    statusArduino.textContent =
-      `Teste do indicador enviado: ${angulo}°`;
-
-    setTimeout(() => {
-      modoTeste = false;
-      ultimoAnguloEnviado = null;
-    }, 1200);
-
-  } else {
-    modoTeste = false;
+  if (enviado && statusArduino) {
+    statusArduino.textContent = `Teste do indicador: ${angulo}°`;
   }
+
+  setTimeout(() => {
+    modoTeste = false;
+    anguloSuavizado = null;
+    ultimoAnguloEnviado = null;
+  }, 1000);
 }
 
 if (botaoTeste30) {
   botaoTeste30.addEventListener("click", () => testarServo(30));
 }
-
 if (botaoTeste90) {
   botaoTeste90.addEventListener("click", () => testarServo(90));
 }
-
 if (botaoTeste150) {
   botaoTeste150.addEventListener("click", () => testarServo(150));
 }
@@ -224,7 +220,6 @@ async function lerRespostasArduino() {
 
     while (conectado) {
       const { value, done } = await leitorSerial.read();
-
       if (done) break;
       if (!value) continue;
 
@@ -237,28 +232,22 @@ async function lerRespostasArduino() {
         const resposta = linha.trim();
         if (!resposta) continue;
 
-        console.log("Arduino respondeu:", resposta);
+        console.log("Arduino:", resposta);
 
         if (statusArduino) {
           statusArduino.textContent = "Arduino: " + resposta;
         }
       }
     }
-
   } catch (erro) {
-    if (conectado) {
-      console.error("Erro lendo Arduino:", erro);
-    }
-
+    if (conectado) console.error(erro);
   } finally {
     if (leitorSerial) {
       try {
         leitorSerial.releaseLock();
       } catch (_) {}
-
       leitorSerial = null;
     }
-
     lendoSerial = false;
   }
 }
@@ -266,8 +255,7 @@ async function lerRespostasArduino() {
 if (botaoConectar) {
   botaoConectar.addEventListener("click", async () => {
     if (!("serial" in navigator)) {
-      statusArduino.textContent =
-        "Este navegador não oferece acesso serial. Use um navegador compatível com Web Serial.";
+      statusArduino.textContent = "Navegador sem suporte à conexão serial.";
       return;
     }
 
@@ -279,29 +267,20 @@ if (botaoConectar) {
       portaSerial = await navigator.serial.requestPort();
       await portaSerial.open({ baudRate: 9600 });
 
-      if (!portaSerial.writable) {
-        throw new Error("A porta serial não permite escrita.");
-      }
-
       escritorSerial = portaSerial.writable.getWriter();
       conectado = true;
 
-      ultimaMensagem = "";
       ultimoAnguloEnviado = null;
+      anguloSuavizado = null;
+      ultimaMensagem = "";
 
       atualizarBotoes();
-
-      statusArduino.textContent =
-        "Arduino conectado. Controle o indicador.";
+      statusArduino.textContent = "Arduino conectado.";
 
       lerRespostasArduino();
-
     } catch (erro) {
       console.error(erro);
-
-      statusArduino.textContent =
-        "Erro ao conectar: " + erro.message;
-
+      statusArduino.textContent = "Erro: " + erro.message;
       conectado = false;
       atualizarBotoes();
     }
@@ -331,13 +310,9 @@ if (botaoDesconectar) {
       }
 
       statusArduino.textContent = "Arduino desconectado.";
-
     } catch (erro) {
       console.error(erro);
-
-      statusArduino.textContent =
-        "Erro ao desconectar: " + erro.message;
-
+      statusArduino.textContent = "Erro: " + erro.message;
     } finally {
       atualizarBotoes();
     }
@@ -368,24 +343,29 @@ function aoDetectar(resultado) {
   }
 
   const mao = maos[0];
-
   desenharMao(mao);
 
   pontosTexto.textContent = `${mao.length} / 21`;
 
   const resultadoIndicador = calcularAnguloIndicador(mao);
 
-  flexaoTexto.textContent =
-    `${resultadoIndicador.flexao}°`;
+  flexaoTexto.textContent = `${resultadoIndicador.flexao}°`;
+  anguloTexto.textContent = `${resultadoIndicador.servo}°`;
 
-  anguloTexto.textContent =
-    `${resultadoIndicador.servo}°`;
+  if (anguloSuavizado === null) {
+    anguloSuavizado = resultadoIndicador.servo;
+  } else {
+    anguloSuavizado +=
+      (resultadoIndicador.servo - anguloSuavizado) * SUAVIZACAO;
+  }
+
+  const anguloFinal = Math.round(anguloSuavizado);
 
   status.textContent = conectado
-    ? `Controle ativo — indicador ${resultadoIndicador.servo}°.`
+    ? `Controle ativo — indicador ${anguloFinal}°.`
     : "Mão detectada — conecte o Arduino.";
 
-  enviarAngulo(resultadoIndicador.servo);
+  enviarAngulo(anguloFinal);
 }
 
 async function iniciarMediaPipe() {
@@ -408,37 +388,30 @@ async function iniciarMediaPipe() {
 
     hands.onResults(aoDetectar);
 
-    status.textContent =
-      "Reconhecimento carregado. Mostre sua mão.";
+    status.textContent = "Reconhecimento carregado. Mostre sua mão.";
 
     async function analisar() {
       if (video.readyState >= 2 && hands) {
         try {
           await hands.send({ image: video });
         } catch (erro) {
-          console.error("Erro no reconhecimento:", erro);
+          console.error(erro);
         }
       }
-
       requestAnimationFrame(analisar);
     }
 
     analisar();
-
   } catch (erro) {
     console.error(erro);
-
-    status.textContent =
-      "Erro no MediaPipe: " + erro.message;
+    status.textContent = "Erro no MediaPipe: " + erro.message;
   }
 }
 
 async function iniciarCamera() {
   try {
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error(
-        "A câmera exige uma página HTTPS ou contexto seguro."
-      );
+      throw new Error("A câmera exige uma página HTTPS.");
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -451,28 +424,15 @@ async function iniciarCamera() {
     });
 
     video.srcObject = stream;
-
     await video.play();
 
-    if (placeholder) {
-      placeholder.classList.add("hidden");
-    }
+    if (placeholder) placeholder.classList.add("hidden");
 
-    status.textContent =
-      "Carregando reconhecimento da mão...";
-
+    status.textContent = "Carregando reconhecimento da mão...";
     iniciarMediaPipe();
-
   } catch (erro) {
     console.error(erro);
-
-    status.textContent =
-      "Erro ao iniciar câmera: " + erro.message;
-
-    if (placeholder) {
-      placeholder.textContent =
-        "Não foi possível iniciar a câmera.";
-    }
+    status.textContent = "Erro na câmera: " + erro.message;
   }
 }
 
