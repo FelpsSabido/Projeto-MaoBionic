@@ -35,7 +35,7 @@
 
     serialRateHz: 15,
 
-    smoothing: 0.28,
+    smoothing: 0.35,
 
     minimumServoChange: 1,
 
@@ -79,7 +79,7 @@
     thumb: {
       key: "thumb",
       label: "Polegar",
-      active: true,
+      active: false,
       type: "thumb-distance",
 
       landmarks: {
