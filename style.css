@@ -69,7 +69,6 @@ h1 {
   background: #050608;
 }
 
-/* Vídeo e canvas ocupam exatamente a mesma área. */
 #video,
 #canvas {
   position: absolute;
