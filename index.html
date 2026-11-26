@@ -1,11 +1,12 @@
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0b1210">
-  <title>KINETIC — Hand Control</title>
+
+  <title>KINETIC — Indicator Control</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,385 +18,430 @@
 </head>
 
 <body>
-  <div class="app-shell">
 
-    <header class="topbar">
-      <a class="brand" href="#top">
-        <span class="brand-mark"><i></i><i></i><i></i><i></i></span>
+<div class="app-shell">
 
-        <span class="brand-copy">
-          <strong>KINETIC</strong>
-          <small>HAND CONTROL SYSTEM</small>
-        </span>
-      </a>
+  <header class="topbar">
 
-      <div class="top-meta">
-        <span class="live-dot"></span>
-        LOCAL PROCESSING
-        <span class="divider">/</span>
-        INDICATOR 01
+    <a class="brand" href="#top">
+
+      <span class="brand-mark">
+        <i></i><i></i><i></i><i></i>
+      </span>
+
+      <span class="brand-copy">
+        <strong>KINETIC</strong>
+        <small>HAND CONTROL SYSTEM</small>
+      </span>
+
+    </a>
+
+    <div class="top-meta">
+      <span class="live-dot"></span>
+      LOCAL PROCESSING
+      <span class="divider">/</span>
+      INDICATOR 01
+    </div>
+
+    <span class="clock" id="clock">--:--:--</span>
+
+  </header>
+
+
+  <main id="top">
+
+    <section class="intro">
+
+      <div>
+
+        <p class="eyebrow">
+          HUMAN MOTION · SERVO ACTUATION
+        </p>
+
+        <h1>
+          Movimento humano,<br>
+          <em>controle mecânico.</em>
+        </h1>
+
+        <p class="intro-copy">
+          Rastreamento do indicador e controle do servo em tempo real.
+        </p>
+
       </div>
 
-      <span class="clock" id="clock">--:--:--</span>
-    </header>
+      <div class="system-state" id="systemState">
 
-    <main id="top">
+        <span class="state-dot"></span>
 
-      <section class="intro">
         <div>
-          <p class="eyebrow">HUMAN MOTION · SERVO ACTUATION</p>
-
-          <h1>
-            Movimento humano,<br>
-            <em>controle mecânico.</em>
-          </h1>
-
-          <p class="intro-copy">
-            Rastreamento de um dedo, cálculo de abertura e controle em tempo real.
-          </p>
+          <small>SISTEMA</small>
+          <strong id="systemStateText">AGUARDANDO</strong>
         </div>
 
-        <div class="system-state" id="systemState">
-          <span class="state-dot"></span>
-          <div>
-            <small>SISTEMA</small>
-            <strong id="systemStateText">AGUARDANDO</strong>
+      </div>
+
+    </section>
+
+
+    <section class="layout">
+
+      <div class="left-column">
+
+        <article class="panel camera-panel">
+
+          <div class="panel-title">
+
+            <div>
+              <p class="section-index">01 / VISION INPUT</p>
+              <h2>Rastreamento da mão</h2>
+            </div>
+
+            <span class="status-pill" id="cameraStatus">
+              <i></i>
+              <b id="cameraStatusText">CÂMERA DESLIGADA</b>
+            </span>
+
           </div>
-        </div>
-      </section>
 
-      <section class="layout">
 
-        <div class="left-column">
+          <div class="camera-stage">
 
-          <article class="panel camera-panel">
+            <video
+              id="cameraVideo"
+              autoplay
+              muted
+              playsinline>
+            </video>
 
-            <div class="panel-title">
-              <div>
-                <p class="section-index">01 / VISION INPUT</p>
-                <h2>Rastreamento da mão</h2>
+            <canvas id="overlayCanvas"></canvas>
+
+
+            <div class="camera-placeholder" id="cameraPlaceholder">
+
+              <div class="orbit">
+                <span></span>
               </div>
 
-              <span class="status-pill" id="cameraStatus">
+              <strong>Entrada visual em espera</strong>
+
+              <small>
+                Inicie a câmera para rastrear sua mão.
+              </small>
+
+            </div>
+
+
+            <div class="stage-top">
+              <span>CAM 01 · 480 × 360 IDEAL</span>
+              <span id="trackingText">NO TRACKING</span>
+            </div>
+
+            <div class="stage-bottom">
+
+              <span>
                 <i></i>
-                <b id="cameraStatusText">CÂMERA DESLIGADA</b>
+                HAND TRACKING
               </span>
-            </div>
 
-            <div class="camera-stage">
-
-              <video
-                id="cameraVideo"
-                autoplay
-                muted
-                playsinline>
-              </video>
-
-              <canvas id="overlayCanvas"></canvas>
-
-              <div class="camera-placeholder" id="cameraPlaceholder">
-
-                <div class="orbit">
-                  <span></span>
-                </div>
-
-                <strong>Entrada visual em espera</strong>
-
-                <small>
-                  Inicie a câmera para rastrear os pontos da mão.
-                </small>
-
-              </div>
-
-              <div class="stage-top">
-                <span>CAM 01 · 480 × 360 IDEAL</span>
-                <span id="trackingText">NO TRACKING</span>
-              </div>
-
-              <div class="stage-bottom">
-                <span>
-                  <i></i>
-                  WEBGPU HAND TRACKING
-                </span>
-
-                <span id="fpsText">— FPS</span>
-              </div>
+              <span id="fpsText">— FPS</span>
 
             </div>
 
-            <div class="camera-controls">
+          </div>
 
-              <button
-                class="btn btn-primary"
-                id="cameraButton"
-                type="button">
-                INICIAR CÂMERA
-              </button>
 
-              <p>
-                Deixe a mão inteira visível, com a palma voltada para a câmera.
-              </p>
+          <div class="camera-controls">
 
-            </div>
+            <button
+              class="btn btn-primary"
+              id="cameraButton"
+              type="button">
+              INICIAR CÂMERA
+            </button>
+
+            <p>
+              Mantenha a mão visível, com a palma voltada para a câmera.
+            </p>
+
+          </div>
+
+        </article>
+
+
+        <div class="metrics">
+
+          <article class="metric">
+
+            <small>PONTOS DETECTADOS</small>
+
+            <strong id="pointsValue">
+              — <em>/ 21</em>
+            </strong>
 
           </article>
 
-          
-<div class="metrics">
 
-  <article class="metric">
-    <small>PONTOS DETECTADOS</small>
-    <strong id="pointsValue">— <em>/ 21</em></strong>
-  </article>
+          <article class="metric">
 
-  <article class="metric">
-    <small>INDICADOR · SERVO</small>
-    <strong id="indexServoMetric">0<em>°</em></strong>
-  </article>
+            <small>ABERTURA DO DEDO</small>
 
-  <article class="metric">
-    <small>POLEGAR · SERVO</small>
-    <strong id="thumbServoMetric">0<em>°</em></strong>
-  </article>
+            <strong id="openingValue">
+              —<em>%</em>
+            </strong>
+
+          </article>
+
+
+          <article class="metric">
+
+            <small>COMANDO DO SERVO</small>
+
+            <strong id="servoValue">
+              —<em>°</em>
+            </strong>
+
+          </article>
+
+        </div>
+
+      </div>
+
+
+      <aside class="right-column">
+
+
+        <article class="panel panel-pad">
+
+          <div class="panel-title compact">
+
+            <div>
+              <p class="section-index">02 / HARDWARE LINK</p>
+              <h2>Conexão USB</h2>
+            </div>
+
+            <span class="usb-indicator" id="usbIndicator"></span>
+
+          </div>
+
+
+          <p class="description">
+            Conecte o Arduino Uno para transmitir os comandos do indicador.
+          </p>
+
+
+          <div class="device-row">
+
+            <span class="usb-icon">↯</span>
+
+            <div>
+              <strong>Arduino Uno</strong>
+              <small id="usbStatus">Nenhum dispositivo conectado</small>
+            </div>
+
+            <span id="usbLabel">OFFLINE</span>
+
+          </div>
+
+
+          <button
+            class="btn btn-outline full"
+            id="connectButton"
+            type="button">
+            CONECTAR ARDUINO
+          </button>
+
+
+          <button
+            class="text-btn hidden"
+            id="disconnectButton"
+            type="button">
+            Desconectar dispositivo
+          </button>
+
+
+          <div class="protocol">
+            <span>PROTOCOLO <b>1 CANAL</b></span>
+            <span>BAUD <b>9600</b></span>
+          </div>
+
+        </article>
+
+
+        <article class="panel panel-pad">
+
+          <div class="panel-title compact">
+
+            <div>
+              <p class="section-index">03 / MOTION CHANNEL</p>
+              <h2>Indicador</h2>
+            </div>
+
+            <span class="channel-tag">ATIVO</span>
+
+          </div>
+
+
+          <div class="finger-readout">
+
+            <div class="finger-icon">
+              <span></span>
+            </div>
+
+            <div>
+              <strong>Indicador</strong>
+              <small id="fingerState">AGUARDANDO DETECÇÃO</small>
+            </div>
+
+          </div>
+
+
+          <div class="bar">
+            <span id="openingBar"></span>
+          </div>
+
+
+          <div class="bar-labels">
+
+            <span>FECHADO <b>0%</b></span>
+
+            <span>ABERTO <b>100%</b></span>
+
+          </div>
+
+        </article>
+
+
+        <article class="panel panel-pad">
+
+          <div class="panel-title compact">
+
+            <div>
+              <p class="section-index">04 / CALIBRATION</p>
+              <h2>Calibração pessoal</h2>
+            </div>
+
+            <span class="cal-status" id="calibrationStatus">
+              PENDENTE
+            </span>
+
+          </div>
+
+
+          <p class="description">
+            Registre a posição completamente fechada e completamente aberta.
+          </p>
+
+
+          <div class="calibration-buttons">
+
+            <button
+              class="cal-btn"
+              id="captureClosedButton"
+              type="button"
+              disabled>
+
+              <span>A</span>
+
+              <div>
+                <strong>Mão fechada</strong>
+                <small id="closedText">Aguardando captura</small>
+              </div>
+
+              <b id="closedMark">○</b>
+
+            </button>
+
+
+            <button
+              class="cal-btn"
+              id="captureOpenButton"
+              type="button"
+              disabled>
+
+              <span>B</span>
+
+              <div>
+                <strong>Mão aberta</strong>
+                <small id="openText">Aguardando captura</small>
+              </div>
+
+              <b id="openMark">○</b>
+
+            </button>
+
+          </div>
+
+
+          <button
+            class="text-btn"
+            id="resetCalibrationButton"
+            type="button">
+            Redefinir calibração
+          </button>
+
+        </article>
+
+
+        <article class="panel panel-pad">
+
+          <div class="panel-title compact">
+
+            <div>
+              <p class="section-index">05 / SERVO LIMIT</p>
+              <h2>Ângulo de abertura</h2>
+            </div>
+
+            <strong class="degree" id="maxAngleLabel">
+              180°
+            </strong>
+
+          </div>
+
+
+          <p class="description">
+            Ajuste o limite máximo de abertura do servo.
+          </p>
+
+
+          <input
+            id="maxAngleSlider"
+            type="range"
+            min="10"
+            max="180"
+            step="5"
+            value="180">
+
+
+          <div class="bar-labels">
+            <span>10°</span>
+            <span>180°</span>
+          </div>
+
+        </article>
+
+
+      </aside>
+
+    </section>
+
+  </main>
+
+
+  <footer>
+    <span>KINETIC · PROTÓTIPO EDUCACIONAL</span>
+    <span>PROCESSAMENTO LOCAL · SEM ENVIO DE VÍDEO</span>
+  </footer>
 
 </div>
 
 
-        </div>
+<div
+  class="toast"
+  id="toast"
+  role="status"
+  aria-live="polite">
+</div>
 
-        <aside class="right-column">
-
-          <article class="panel panel-pad">
-
-            <div class="panel-title compact">
-              <div>
-                <p class="section-index">02 / HARDWARE LINK</p>
-                <h2>Conexão USB</h2>
-              </div>
-
-              <span class="usb-indicator" id="usbIndicator"></span>
-            </div>
-
-            <p class="description">
-              Conecte o Arduino Uno para transmitir o ângulo do indicador.
-            </p>
-
-            <div class="device-row">
-              <span class="usb-icon">↯</span>
-
-              <div>
-                <strong>Arduino Uno</strong>
-                <small id="usbStatus">Nenhum dispositivo conectado</small>
-              </div>
-
-              <span id="usbLabel">OFFLINE</span>
-            </div>
-
-            <button
-              class="btn btn-outline full"
-              id="connectButton"
-              type="button">
-              CONECTAR ARDUINO
-            </button>
-
-            <button
-              class="text-btn hidden"
-              id="disconnectButton"
-              type="button">
-              Desconectar dispositivo
-            </button>
-
-            <div class="protocol">
-              <span>PROTOCOLO <b>2 CANAIS · CSV</b></span>
-              <span>BAUD <b>9600</b></span>
-            </div>
-
-          </article>
-
-          
-<article class="panel panel-pad">
-
-  <div class="panel-title compact">
-    <div>
-      <p class="section-index">03 / MOTION CHANNELS</p>
-      <h2>Canais ativos</h2>
-    </div>
-
-    <span class="channel-tag">02 ATIVOS</span>
-  </div>
-
-  <!-- INDICADOR -->
-
-  <div class="finger-channel">
-
-    <div class="finger-readout">
-      <div class="finger-icon">
-        <span></span>
-      </div>
-
-      <div>
-        <strong>Indicador</strong>
-        <small id="indexState">AGUARDANDO DETECÇÃO</small>
-      </div>
-    </div>
-
-    <div class="bar">
-      <span id="indexBar"></span>
-    </div>
-
-    <div class="bar-labels">
-      <span>ABERTURA <b id="indexOpening">0%</b></span>
-      <span>SERVO <b id="indexServo">0°</b></span>
-    </div>
-
-  </div>
-
-  <!-- POLEGAR -->
-
-  <div class="finger-channel">
-
-    <div class="finger-readout">
-      <div class="finger-icon thumb-icon">
-        <span></span>
-      </div>
-
-      <div>
-        <strong>Polegar</strong>
-        <small id="thumbState">AGUARDANDO DETECÇÃO</small>
-      </div>
-    </div>
-
-    <div class="bar">
-      <span id="thumbBar"></span>
-    </div>
-
-    <div class="bar-labels">
-      <span>ABERTURA <b id="thumbOpening">0%</b></span>
-      <span>SERVO <b id="thumbServo">0°</b></span>
-    </div>
-
-  </div>
-
-</article>
-
-
-          <article class="panel panel-pad">
-
-            <div class="panel-title compact">
-              <div>
-                <p class="section-index">04 / CALIBRATION</p>
-                <h2>Calibração pessoal</h2>
-              </div>
-
-              <span class="cal-status" id="calibrationStatus">
-                PENDENTE
-              </span>
-            </div>
-
-            <p class="description">
-              Registre os dois extremos do movimento antes de transmitir ao servo.
-            </p>
-
-            <div class="calibration-buttons">
-
-              <button
-                class="cal-btn"
-                id="captureClosedButton"
-                type="button"
-                disabled>
-
-                <span>A</span>
-
-                <div>
-                  <strong>Mão fechada</strong>
-                  <small id="closedText">Aguardando captura</small>
-                </div>
-
-                <b id="closedMark">○</b>
-
-              </button>
-
-              <button
-                class="cal-btn"
-                id="captureOpenButton"
-                type="button"
-                disabled>
-
-                <span>B</span>
-
-                <div>
-                  <strong>Mão aberta</strong>
-                  <small id="openText">Aguardando captura</small>
-                </div>
-
-                <b id="openMark">○</b>
-
-              </button>
-
-            </div>
-
-            <button
-              class="text-btn"
-              id="resetCalibrationButton"
-              type="button">
-              Redefinir calibração
-            </button>
-
-          </article>
-
-          <article class="panel panel-pad limit-panel">
-
-            <div class="panel-title compact">
-
-              <div>
-                <p class="section-index">05 / SERVO LIMIT</p>
-                <h2>Ângulo de alívio</h2>
-              </div>
-
-              <strong class="degree" id="maxAngleLabel">
-                70°
-              </strong>
-
-            </div>
-
-            <p class="description">
-              Limite de abertura do servo. Comece baixo e ajuste com o mecanismo sem carga.
-            </p>
-
-            <input
-              id="maxAngleSlider"
-              type="range"
-              min="10"
-              max="1800"
-              step="5"
-              value="180">
-
-            <div class="bar-labels">
-              <span>10°</span>
-              <span>120°</span>
-            </div>
-
-          </article>
-
-        </aside>
-
-      </section>
-
-    </main>
-
-    <footer>
-      <span>KINETIC · PROTÓTIPO EDUCACIONAL</span>
-      <span>PROCESSAMENTO LOCAL · SEM ENVIO DE VÍDEO</span>
-    </footer>
-
-  </div>
-
-  <div
-    class="toast"
-    id="toast"
-    role="status"
-    aria-live="polite">
-  </div>
 
 </body>
 </html>
