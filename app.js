@@ -1,206 +1,45 @@
 
-/*
- * KINETIC — HAND CONTROL
- *
- * Visão: micro-handpose (WebGPU), sem SDK/runtime MediaPipe.
- * Interface, desenho, cálculos, calibração e comunicação serial: código próprio.
- *
- * PROTOCOLO:
- * indicador,polegar\n
- *
- * Exemplo:
- * 0,70\n
- *
- * 0° = corda tensionada (mão robótica fechada).
- * Ângulo máximo = corda aliviada (elástico abre os dedos).
- */
-
 (() => {
   "use strict";
 
-  // ==========================================
-  // 1. CONFIGURAÇÕES GERAIS
-  // ==========================================
+  // KINETIC — um canal ativo: indicador.
+  // Serial: um inteiro seguido de newline. Exemplo: 63\n.
 
   const CONFIG = {
-    detectorModuleUrl:
+    detectorUrl:
       "https://cdn.jsdelivr.net/npm/@svenflow/micro-handpose@0.3.0/dist/index.js",
 
     baudRate: 9600,
 
-    cameraWidth: 640,
-    cameraHeight: 480,
+    cameraWidth: 480,
+    cameraHeight: 360,
+    cameraFps: 30,
 
-    targetInferenceFps: 25,
+    // Filtro temporal de resposta.
+    smoothingTimeMs: 75,
 
-    serialRateHz: 25,
-
-    smoothing: 0.45,
+    // Intervalo mínimo entre transmissões.
+    serialIntervalMs: 35,
 
     minimumServoChange: 1,
 
-    defaultOpenAngle: 70,
-
+    maxOpenAngle: 70,
     minOpenAngle: 10,
-    maxOpenAngle: 120,
+    maxAllowedAngle: 120,
 
-    historySize: 18,
+    historySize: 15,
 
-    calibrationStorageKey:
-      "kinetic-hand-calibration-v2"
+    calibrationKey: "kinetic-indicator-calibration-v3"
   };
 
 
   // ==========================================
-  // 2. CONFIGURAÇÃO DOS DEDOS
-  // ==========================================
-
-  // Os cinco canais já estão organizados.
-  // Por enquanto, somente indicador e polegar estão ativos.
-
-  const FINGER_CHANNELS = {
-
-    index: {
-      key: "index",
-      label: "Indicador",
-      active: true,
-      type: "joint-angle",
-
-      landmarks: {
-        mcp: 5,
-        pip: 6,
-        dip: 7,
-        tip: 8
-      },
-
-      serialPosition: 0
-    },
-
-    thumb: {
-      key: "thumb",
-      label: "Polegar",
-      active: false,
-      type: "thumb-distance",
-
-      landmarks: {
-        tip: 4,
-        indexMcp: 5,
-        wrist: 0,
-        middleMcp: 9
-      },
-
-      serialPosition: 1
-    },
-
-    middle: {
-      key: "middle",
-      label: "Médio",
-      active: false,
-      type: "joint-angle",
-
-      landmarks: {
-        mcp: 9,
-        pip: 10,
-        dip: 11,
-        tip: 12
-      },
-
-      serialPosition: 2
-    },
-
-    ring: {
-      key: "ring",
-      label: "Anelar",
-      active: false,
-      type: "joint-angle",
-
-      landmarks: {
-        mcp: 13,
-        pip: 14,
-        dip: 15,
-        tip: 16
-      },
-
-      serialPosition: 3
-    },
-
-    pinky: {
-      key: "pinky",
-      label: "Mindinho",
-      active: false,
-      type: "joint-angle",
-
-      landmarks: {
-        mcp: 17,
-        pip: 18,
-        dip: 19,
-        tip: 20
-      },
-
-      serialPosition: 4
-    }
-
-  };
-
-
-  const ACTIVE_FINGERS = Object.values(FINGER_CHANNELS)
-    .filter((finger) => finger.active)
-    .sort((a, b) => a.serialPosition - b.serialPosition);
-
-
-  // ==========================================
-  // 3. CONEXÕES DOS 21 PONTOS
-  // ==========================================
-
-  const CONNECTIONS = [
-
-    [0, 1],
-    [1, 2],
-    [2, 3],
-    [3, 4],
-
-    [0, 5],
-    [5, 6],
-    [6, 7],
-    [7, 8],
-
-    [5, 9],
-    [9, 10],
-    [10, 11],
-    [11, 12],
-
-    [9, 13],
-    [13, 14],
-    [14, 15],
-    [15, 16],
-
-    [13, 17],
-    [17, 18],
-    [18, 19],
-    [19, 20],
-
-    [0, 17]
-
-  ];
-
-
-  // ==========================================
-  // 4. ELEMENTOS DA INTERFACE
+  // ELEMENTOS DA INTERFACE
   // ==========================================
 
   const $ = (id) => document.getElementById(id);
 
-  const mapByActiveFinger = (factory) =>
-    Object.fromEntries(
-      ACTIVE_FINGERS.map((finger) => [
-        finger.key,
-        factory(finger)
-      ])
-    );
-
-
   const ui = {
-
     clock: $("clock"),
 
     systemState: $("systemState"),
@@ -208,184 +47,321 @@
 
     video: $("cameraVideo"),
     canvas: $("overlayCanvas"),
-    cameraPlaceholder: $("cameraPlaceholder"),
+    placeholder: $("cameraPlaceholder"),
 
     cameraButton: $("cameraButton"),
-    cameraBadge: $("cameraBadge"),
+    cameraStatus: $("cameraStatus"),
     cameraStatusText: $("cameraStatusText"),
 
-    trackingReadout: $("trackingReadout"),
-    fpsReadout: $("fpsReadout"),
+    trackingText: $("trackingText"),
+    fpsText: $("fpsText"),
+    pointsValue: $("pointsValue"),
 
-    landmarkCount: $("landmarkCount"),
-    confidenceValue: $("confidenceValue"),
-    packetValue: $("packetValue"),
+    openingValue: $("openingValue"),
+    servoValue: $("servoValue"),
 
     connectButton: $("connectButton"),
     disconnectButton: $("disconnectButton"),
 
-    serialStatus: $("serialStatus"),
-    serialTag: $("serialTag"),
-    serialIndicator: $("serialIndicator"),
+    usbStatus: $("usbStatus"),
+    usbLabel: $("usbLabel"),
+    usbIndicator: $("usbIndicator"),
 
-    fingerList: $("fingerList"),
-    channelCountValue: $("channelCountValue"),
+    fingerState: $("fingerState"),
+    openingBar: $("openingBar"),
 
-    calibrationState: $("calibrationState"),
+    calibrationStatus: $("calibrationStatus"),
 
-    captureClosedButton: $("captureClosedButton"),
-    captureOpenButton: $("captureOpenButton"),
+    captureClosed: $("captureClosedButton"),
+    captureOpen: $("captureOpenButton"),
 
-    closedCalibrationText: $("closedCalibrationText"),
-    openCalibrationText: $("openCalibrationText"),
+    closedText: $("closedText"),
+    openText: $("openText"),
 
     closedMark: $("closedMark"),
     openMark: $("openMark"),
 
-    resetCalibrationButton: $("resetCalibrationButton"),
+    resetCalibration: $("resetCalibrationButton"),
 
-    maxAngleSlider: $("maxAngleSlider"),
+    slider: $("maxAngleSlider"),
     maxAngleLabel: $("maxAngleLabel"),
 
-    bottomTracking: $("bottomTracking"),
-    bottomUsb: $("bottomUsb"),
-    bottomCalibration: $("bottomCalibration"),
-
     toast: $("toast")
-
   };
 
 
   // ==========================================
-  // 5. ESTADO DO SISTEMA
+  // CONEXÕES DOS 21 PONTOS
+  // ==========================================
+
+  const CONNECTIONS = [
+    [0,1], [1,2], [2,3], [3,4],
+    [0,5], [5,6], [6,7], [7,8],
+    [5,9], [9,10], [10,11], [11,12],
+    [9,13], [13,14], [14,15], [15,16],
+    [13,17], [17,18], [18,19], [19,20],
+    [0,17]
+  ];
+
+
+  // ==========================================
+  // ESTADO DO SISTEMA
   // ==========================================
 
   const state = {
-
     detector: null,
 
-    cameraStream: null,
+    stream: null,
+
     cameraRunning: false,
     inferenceBusy: false,
 
-    lastInferenceAt: 0,
+    frameCallbackId: null,
+    fallbackFrameId: null,
 
-    fpsFrames: 0,
-    fpsStartedAt: performance.now(),
-    currentFps: 0,
+    lastFallbackVideoTime: -1,
+    lastInferenceTime: 0,
 
-    latestRaw: null,
+    fpsIntervals: [],
+    lastFrameTimestamp: null,
 
-    history: mapByActiveFinger(() => []),
+    history: [],
 
-    smoothed: mapByActiveFinger(() => null),
+    latestRawAngle: null,
+    filteredOpening: null,
+    latestServoTarget: 0,
 
-    latestServo: mapByActiveFinger(() => 0),
+    maxOpenAngle: CONFIG.maxOpenAngle,
 
     calibration: loadCalibration(),
 
-    maxOpenAngle: CONFIG.defaultOpenAngle,
+    port: null,
+    writer: null,
 
-    serialPort: null,
-    serialWriter: null,
+    serialBusy: false,
+    lastSentAngle: null,
+    lastSerialTime: 0,
 
-    serialConnected: false,
-
-    serialQueue: Promise.resolve(),
-
-    lastSerialAt: 0,
-    lastSentValues: null,
-
-    toastTimer: null,
-
-    animationFrame: null
-
+    toastTimer: null
   };
 
 
   // ==========================================
-  // 6. CALIBRAÇÃO SALVA
+  // CALIBRAÇÃO
   // ==========================================
 
   function loadCalibration() {
-
     try {
-
       const saved = JSON.parse(
-        localStorage.getItem(CONFIG.calibrationStorageKey)
+        localStorage.getItem(CONFIG.calibrationKey)
       );
 
       if (
-        !saved ||
-        !saved.closed ||
-        !saved.open
+        Number.isFinite(saved?.closed) &&
+        Number.isFinite(saved?.open)
       ) {
-        return {
-          closed: null,
-          open: null
-        };
+        return saved;
       }
 
-      const valid = ACTIVE_FINGERS.every((finger) =>
-
-        Number.isFinite(saved.closed[finger.key]) &&
-        Number.isFinite(saved.open[finger.key])
-
-      );
-
-      return valid
-        ? saved
-        : { closed: null, open: null };
-
     } catch (error) {
-
-      console.warn(
-        "Calibração salva indisponível:",
-        error
-      );
-
-      return {
-        closed: null,
-        open: null
-      };
-
+      console.warn("Calibração local indisponível:", error);
     }
 
+    return {
+      closed: null,
+      open: null
+    };
   }
 
 
   function saveCalibration() {
-
     try {
-
       localStorage.setItem(
-        CONFIG.calibrationStorageKey,
+        CONFIG.calibrationKey,
         JSON.stringify(state.calibration)
       );
 
     } catch (error) {
-
       console.warn(
         "Não foi possível salvar a calibração:",
         error
       );
+    }
+  }
 
-      showToast(
-        "Calibração usada nesta sessão, mas não pôde ser salva no navegador."
+
+  function isCalibrated() {
+    return (
+      Number.isFinite(state.calibration.closed) &&
+      Number.isFinite(state.calibration.open) &&
+      Math.abs(
+        state.calibration.open -
+        state.calibration.closed
+      ) >= 12
+    );
+  }
+
+
+  function updateCalibrationUI() {
+    const closed = Number.isFinite(
+      state.calibration.closed
+    );
+
+    const opened = Number.isFinite(
+      state.calibration.open
+    );
+
+    const ready = isCalibrated();
+
+
+    ui.closedText.textContent = closed
+      ? "Captura registrada"
+      : "Aguardando captura";
+
+    ui.openText.textContent = opened
+      ? "Captura registrada"
+      : "Aguardando captura";
+
+
+    ui.closedMark.textContent =
+      closed ? "✓" : "○";
+
+    ui.openMark.textContent =
+      opened ? "✓" : "○";
+
+
+    ui.captureClosed.classList.toggle(
+      "done",
+      closed
+    );
+
+    ui.captureOpen.classList.toggle(
+      "done",
+      opened
+    );
+
+
+    ui.calibrationStatus.textContent = ready
+      ? "CONCLUÍDA"
+      : (closed && opened ? "REFAZER" : "PENDENTE");
+
+
+    ui.calibrationStatus.dataset.ready =
+      String(ready);
+
+
+    ui.captureClosed.disabled =
+      state.latestRawAngle === null;
+
+    ui.captureOpen.disabled =
+      state.latestRawAngle === null;
+
+
+    updateSystem();
+  }
+
+
+  function capturePose(which) {
+
+    if (state.latestRawAngle === null) {
+      toast(
+        "Mantenha o indicador visível para registrar a posição."
+      );
+      return;
+    }
+
+    const value = median(state.history);
+
+    if (!Number.isFinite(value)) {
+      toast(
+        "Aguarde a câmera detectar o indicador."
+      );
+      return;
+    }
+
+    state.calibration[which] = value;
+
+    saveCalibration();
+
+    updateCalibrationUI();
+
+
+    if (
+      state.calibration.closed !== null &&
+      state.calibration.open !== null &&
+      !isCalibrated()
+    ) {
+
+      toast(
+        "As capturas ficaram muito próximas. Repita com o dedo bem fechado e depois bem estendido.",
+        5000
+      );
+
+    } else {
+
+      toast(
+        which === "closed"
+          ? "Referência de dedo fechado salva."
+          : "Referência de dedo estendido salva."
       );
 
     }
 
+
+    state.filteredOpening = null;
+
+    updateServoTarget(
+      state.latestRawAngle,
+      performance.now()
+    );
+
+  }
+
+
+  function resetCalibration() {
+
+    state.calibration = {
+      closed: null,
+      open: null
+    };
+
+    state.history = [];
+
+    state.filteredOpening = null;
+
+    localStorage.removeItem(
+      CONFIG.calibrationKey
+    );
+
+    updateCalibrationUI();
+
+    toast("Calibração redefinida.");
+
+  }
+
+
+  function median(values) {
+    if (!values.length) return null;
+
+    const sorted = [...values].sort(
+      (a, b) => a - b
+    );
+
+    const middle = Math.floor(
+      sorted.length / 2
+    );
+
+    return sorted.length % 2
+      ? sorted[middle]
+      : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
 
   // ==========================================
-  // 7. INTERFACE E NOTIFICAÇÕES
+  // INTERFACE E STATUS
   // ==========================================
 
-  function showToast(message, duration = 3600) {
-
-    if (!ui.toast) return;
+  function toast(message, duration = 3500) {
 
     ui.toast.textContent = message;
 
@@ -393,52 +369,51 @@
 
     clearTimeout(state.toastTimer);
 
-    state.toastTimer = setTimeout(() => {
-
-      ui.toast.classList.remove("show");
-
-    }, duration);
-
-  }
-
-
-  function setSystemState(kind, message) {
-
-    ui.systemState.dataset.state = kind || "idle";
-
-    ui.systemStateText.textContent = message;
+    state.toastTimer = setTimeout(
+      () => ui.toast.classList.remove("show"),
+      duration
+    );
 
   }
 
 
-  function updateSystemState() {
+  function setSystem(kind, text) {
+
+    ui.systemState.dataset.state = kind;
+
+    ui.systemStateText.textContent = text;
+
+  }
+
+
+  function updateSystem() {
 
     if (
       state.cameraRunning &&
-      state.serialConnected &&
+      state.writer &&
       isCalibrated()
     ) {
 
-      setSystemState(
+      setSystem(
         "active",
-        "RASTREAMENTO E CONTROLE ATIVOS"
+        "CONTROLE ATIVO"
       );
 
     } else if (
       state.cameraRunning ||
-      state.serialConnected
+      state.writer
     ) {
 
-      setSystemState(
+      setSystem(
         "ready",
         "SISTEMA PARCIALMENTE PRONTO"
       );
 
     } else {
 
-      setSystemState(
+      setSystem(
         "idle",
-        "AGUARDANDO INICIALIZAÇÃO"
+        "AGUARDANDO"
       );
 
     }
@@ -446,31 +421,27 @@
   }
 
 
-  function setCameraStatus(active, message) {
+  function setCameraStatus(active, text) {
 
-    ui.cameraBadge.dataset.active = String(active);
+    ui.cameraStatus.dataset.active =
+      String(active);
 
-    ui.cameraStatusText.textContent = message;
-
-    ui.bottomTracking.textContent =
-      active ? "ATIVO" : "INATIVO";
+    ui.cameraStatusText.textContent = text;
 
   }
 
 
-  function setSerialStatus(connected, message) {
+  function setUsbStatus(connected, text) {
 
-    state.serialConnected = connected;
+    ui.usbStatus.textContent = text;
 
-    ui.serialStatus.textContent = message;
-
-    ui.serialTag.textContent =
+    ui.usbLabel.textContent =
       connected ? "ONLINE" : "OFFLINE";
 
-    ui.serialTag.dataset.connected =
+    ui.usbLabel.dataset.connected =
       String(connected);
 
-    ui.serialIndicator.dataset.connected =
+    ui.usbIndicator.dataset.connected =
       String(connected);
 
     ui.connectButton.classList.toggle(
@@ -483,126 +454,10 @@
       !connected
     );
 
-    ui.bottomUsb.textContent =
-      connected ? "CONECTADO" : "DESCONECTADO";
-
-    updateSystemState();
+    updateSystem();
 
   }
 
-
-  // ==========================================
-  // 8. VERIFICAR CALIBRAÇÃO
-  // ==========================================
-
-  function isCalibrated() {
-
-    if (
-      !state.calibration.closed ||
-      !state.calibration.open
-    ) {
-      return false;
-    }
-
-    return ACTIVE_FINGERS.every((finger) => {
-
-      const closedValue =
-        state.calibration.closed[finger.key];
-
-      const openValue =
-        state.calibration.open[finger.key];
-
-      const range = Math.abs(
-        openValue - closedValue
-      );
-
-      const minimumRange =
-        finger.type === "thumb-distance"
-          ? 0.06
-          : 12;
-
-      return range >= minimumRange;
-
-    });
-
-  }
-
-
-  function updateCalibrationUI() {
-
-    const closedReady =
-      Boolean(state.calibration.closed);
-
-    const openReady =
-      Boolean(state.calibration.open);
-
-    const ready = isCalibrated();
-
-
-    ui.closedCalibrationText.textContent =
-      closedReady
-        ? "Captura registrada"
-        : "Aguardando captura";
-
-
-    ui.openCalibrationText.textContent =
-      openReady
-        ? "Captura registrada"
-        : "Aguardando captura";
-
-
-    ui.closedMark.textContent =
-      closedReady ? "✓" : "○";
-
-    ui.openMark.textContent =
-      openReady ? "✓" : "○";
-
-
-    ui.captureClosedButton.classList.toggle(
-      "is-done",
-      closedReady
-    );
-
-    ui.captureOpenButton.classList.toggle(
-      "is-done",
-      openReady
-    );
-
-
-    ui.calibrationState.textContent = ready
-      ? "CONCLUÍDA"
-      : (
-          closedReady && openReady
-            ? "REFAZER CAPTURA"
-            : "PENDENTE"
-        );
-
-
-    ui.calibrationState.dataset.ready =
-      String(ready);
-
-
-    ui.bottomCalibration.textContent =
-      ready ? "CONCLUÍDA" : "PENDENTE";
-
-
-    // Os botões só ficam disponíveis quando uma mão é detectada.
-
-    ui.captureClosedButton.disabled =
-      !state.latestRaw;
-
-    ui.captureOpenButton.disabled =
-      !state.latestRaw;
-
-
-    updateSystemState();
-
-  }
-
-
-  // ==========================================
-  // 9. FUNÇÕES MATEMÁTICAS
-  // ==========================================
 
   function clamp(value, min, max) {
 
@@ -614,182 +469,63 @@
   }
 
 
-  function pointAt(landmarks, index) {
+  // ==========================================
+  // CÁLCULO DOS ÂNGULOS
+  // ==========================================
 
-    const point = landmarks[index];
+  function point(landmarks, index) {
 
-    if (!point) {
+    const p = landmarks[index];
 
+    if (!p) {
       throw new Error(
-        `Landmark ${index} não encontrado.`
+        `Ponto ${index} ausente no detector.`
       );
-
     }
 
-    if (Array.isArray(point)) {
+    if (Array.isArray(p)) {
 
       return {
-        x: Number(point[0]),
-        y: Number(point[1]),
-        z: Number(point[2] ?? 0)
+        x: Number(p[0]),
+        y: Number(p[1])
       };
 
     }
 
     return {
-      x: Number(point.x),
-      y: Number(point.y),
-      z: Number(point.z ?? 0)
+      x: Number(p.x),
+      y: Number(p.y)
     };
 
   }
 
 
-  function distance3(a, b) {
+  function angleAt(a, b, c) {
 
-    return Math.hypot(
-      a.x - b.x,
-      a.y - b.y,
-      a.z - b.z
+    const bax = a.x - b.x;
+    const bay = a.y - b.y;
+
+    const bcx = c.x - b.x;
+    const bcy = c.y - b.y;
+
+    const denominator =
+      Math.hypot(bax, bay) *
+      Math.hypot(bcx, bcy);
+
+    if (!denominator) return 180;
+
+    const cosine = clamp(
+      (bax * bcx + bay * bcy) / denominator,
+      -1,
+      1
     );
+
+    return Math.acos(cosine) * 180 / Math.PI;
 
   }
 
 
-  function angle3(a, b, c) {
-
-    const ba = {
-      x: a.x - b.x,
-      y: a.y - b.y,
-      z: a.z - b.z
-    };
-
-    const bc = {
-      x: c.x - b.x,
-      y: c.y - b.y,
-      z: c.z - b.z
-    };
-
-
-    const dot =
-      ba.x * bc.x +
-      ba.y * bc.y +
-      ba.z * bc.z;
-
-
-    const magBA = Math.hypot(
-      ba.x,
-      ba.y,
-      ba.z
-    );
-
-    const magBC = Math.hypot(
-      bc.x,
-      bc.y,
-      bc.z
-    );
-
-
-    if (
-      magBA === 0 ||
-      magBC === 0
-    ) {
-      return 180;
-    }
-
-
-    return Math.acos(
-
-      clamp(
-        dot / (magBA * magBC),
-        -1,
-        1
-      )
-
-    ) * 180 / Math.PI;
-
-  }
-
-
-  // ==========================================
-  // 10. MEDIR CADA DEDO
-  // ==========================================
-
-  function measureFinger(finger, landmarks) {
-
-    const p = (index) =>
-      pointAt(landmarks, index);
-
-
-    // INDICADOR E FUTUROS DEDOS
-    // Quanto mais estendido, mais próximo de 180°.
-
-    if (finger.type === "joint-angle") {
-
-      const j = finger.landmarks;
-
-      const pipAngle = angle3(
-        p(j.mcp),
-        p(j.pip),
-        p(j.dip)
-      );
-
-      const dipAngle = angle3(
-        p(j.pip),
-        p(j.dip),
-        p(j.tip)
-      );
-
-      return (
-        pipAngle * 0.72 +
-        dipAngle * 0.28
-      );
-
-    }
-
-
-    // POLEGAR
-    // Mede a distância da ponta em relação à base do indicador,
-    // dividida pelo tamanho da palma.
-
-    if (finger.type === "thumb-distance") {
-
-      const j = finger.landmarks;
-
-      const thumbTip = p(j.tip);
-
-      const indexMcp = p(j.indexMcp);
-
-      const wrist = p(j.wrist);
-
-      const middleMcp = p(j.middleMcp);
-
-
-      const palmScale = distance3(
-        wrist,
-        middleMcp
-      );
-
-
-      if (palmScale < 0.0001) {
-        return 0;
-      }
-
-
-      return (
-        distance3(thumbTip, indexMcp) /
-        palmScale
-      );
-
-    }
-
-
-    return 0;
-
-  }
-
-
-  function collectRawMetrics(landmarks) {
+  function calculateIndexAngle(landmarks) {
 
     if (
       !Array.isArray(landmarks) ||
@@ -802,123 +538,189 @@
 
     }
 
+    // Pontos do indicador:
+    // 5 = base
+    // 6 = articulação central
+    // 7 = articulação distal
+    // 8 = ponta
 
-    const values = {};
+    const mcp = point(landmarks, 5);
+    const pip = point(landmarks, 6);
+    const dip = point(landmarks, 7);
+    const tip = point(landmarks, 8);
 
-    for (const finger of ACTIVE_FINGERS) {
+    const pipAngle = angleAt(
+      mcp,
+      pip,
+      dip
+    );
 
-      values[finger.key] =
-        measureFinger(finger, landmarks);
+    const dipAngle = angleAt(
+      pip,
+      dip,
+      tip
+    );
 
+    return (
+      pipAngle * 0.72 +
+      dipAngle * 0.28
+    );
+
+  }
+
+
+  // ==========================================
+  // SUAVIZAÇÃO E CONVERSÃO
+  // ==========================================
+
+  function updateServoTarget(rawAngle, now) {
+
+    state.latestRawAngle = rawAngle;
+
+    state.history.push(rawAngle);
+
+    if (
+      state.history.length > CONFIG.historySize
+    ) {
+      state.history.shift();
     }
 
-    return values;
-
-  }
-
-
-  // ==========================================
-  // 11. SUAVIZAÇÃO
-  // ==========================================
-
-  function smoothMetric(key, value) {
-
-    const previous =
-      state.smoothed[key];
-
-
-    state.smoothed[key] =
-      previous === null
-        ? value
-        : previous +
-          (value - previous) * CONFIG.smoothing;
-
-
-    return state.smoothed[key];
-
-  }
-
-
-  // ==========================================
-  // 12. CALCULAR ABERTURA
-  // ==========================================
-
-  function normalizedOpening(key, rawValue) {
 
     if (!isCalibrated()) {
-      return 0;
+
+      state.latestServoTarget = 0;
+
+      updateReadouts(0, 0);
+
+      updateCalibrationUI();
+
+      return;
+
     }
 
 
-    const closedValue =
-      state.calibration.closed[key];
+    const closed =
+      state.calibration.closed;
 
-    const openValue =
-      state.calibration.open[key];
+    const open =
+      state.calibration.open;
 
-
-    const range =
-      openValue - closedValue;
+    const span = open - closed;
 
 
-    if (Math.abs(range) < 0.000001) {
-      return 0;
-    }
-
-
-    return clamp(
-      (rawValue - closedValue) / range,
+    // Conversão linear da leitura para 0–100%.
+    const opening = clamp(
+      (rawAngle - closed) / span,
       0,
       1
     );
 
+
+    // Filtro temporal:
+    // o comportamento não depende de uma quantidade fixa de quadros.
+    const dt = state.lastInferenceTime
+      ? clamp(
+          (now - state.lastInferenceTime) / 1000,
+          0.001,
+          0.15
+        )
+      : 0.04;
+
+
+    const alpha =
+      1 - Math.exp(
+        -dt / (CONFIG.smoothingTimeMs / 1000)
+      );
+
+
+    state.filteredOpening =
+      state.filteredOpening === null
+        ? opening
+        : state.filteredOpening +
+          alpha * (opening - state.filteredOpening);
+
+
+    state.lastInferenceTime = now;
+
+
+    // Mão fechada = 0°.
+    // Mão aberta = limite escolhido no site.
+    const target = Math.round(
+      state.filteredOpening *
+      state.maxOpenAngle
+    );
+
+
+    state.latestServoTarget = clamp(
+      target,
+      0,
+      CONFIG.maxAllowedAngle
+    );
+
+
+    updateReadouts(
+      state.filteredOpening,
+      state.latestServoTarget
+    );
+
+
+    scheduleSerialWrite();
+
+    updateCalibrationUI();
+
   }
 
 
-  function servoAngleFromOpening(opening) {
+  function updateReadouts(opening, servoAngle) {
 
-    // Mão fechada = 0°
-    // Mão aberta = limite escolhido no site.
-
-    return Math.round(
-      clamp(opening, 0, 1) *
-      state.maxOpenAngle
+    const percent = Math.round(
+      opening * 100
     );
+
+    ui.openingValue.innerHTML =
+      `${percent}<em>%</em>`;
+
+    ui.servoValue.innerHTML =
+      `${servoAngle}<em>°</em>`;
+
+    ui.openingBar.style.width =
+      `${percent}%`;
+
+    ui.fingerState.textContent =
+      percent >= 92
+        ? "ABERTO"
+        : percent <= 8
+          ? "FECHADO"
+          : "EM MOVIMENTO";
 
   }
 
 
   // ==========================================
-  // 13. DESENHAR A MÃO
+  // DESENHO DOS 21 LANDMARKS
   // ==========================================
 
   function drawHand(landmarks) {
 
-    const canvas = ui.canvas;
+    const ctx =
+      ui.canvas.getContext("2d");
 
-    const video = ui.video;
+    const width =
+      ui.video.videoWidth;
 
-    const ctx = canvas.getContext("2d");
+    const height =
+      ui.video.videoHeight;
 
-
-    const width = video.videoWidth;
-
-    const height = video.videoHeight;
-
-
-    if (!width || !height) {
-      return;
-    }
+    if (!width || !height) return;
 
 
     if (
-      canvas.width !== width ||
-      canvas.height !== height
+      ui.canvas.width !== width ||
+      ui.canvas.height !== height
     ) {
 
-      canvas.width = width;
-
-      canvas.height = height;
+      ui.canvas.width = width;
+      ui.canvas.height = height;
 
     }
 
@@ -930,7 +732,6 @@
       height
     );
 
-
     ctx.lineWidth = Math.max(
       2,
       width / 320
@@ -938,20 +739,14 @@
 
     ctx.lineCap = "round";
 
-    ctx.lineJoin = "round";
-
     ctx.strokeStyle =
-      "rgba(195, 241, 120, .88)";
+      "rgba(195,241,120,.88)";
 
-
-    // DESENHA AS CONEXÕES
 
     for (const [from, to] of CONNECTIONS) {
 
-      const a = pointAt(landmarks, from);
-
-      const b = pointAt(landmarks, to);
-
+      const a = point(landmarks, from);
+      const b = point(landmarks, to);
 
       ctx.beginPath();
 
@@ -970,50 +765,28 @@
     }
 
 
-    // DESENHA OS 21 PONTOS
+    for (let i = 0; i < 21; i++) {
 
-    const emphasized = new Set([
-      0, 4, 5, 6, 7, 8, 17
-    ]);
+      const p = point(landmarks, i);
 
-
-    for (
-      let index = 0;
-      index < 21;
-      index += 1
-    ) {
-
-      const point = pointAt(
-        landmarks,
-        index
-      );
-
+      const important =
+        [0, 5, 6, 7, 8, 17].includes(i);
 
       ctx.beginPath();
 
       ctx.arc(
-        point.x * width,
-        point.y * height,
-        emphasized.has(index) ? 4.1 : 2.8,
+        p.x * width,
+        p.y * height,
+        important ? 4 : 2.7,
         0,
         Math.PI * 2
       );
 
-
-      ctx.fillStyle =
-        emphasized.has(index)
-          ? "#edffc4"
-          : "#c3f178";
+      ctx.fillStyle = important
+        ? "#edffc4"
+        : "#c3f178";
 
       ctx.fill();
-
-
-      ctx.lineWidth = 1;
-
-      ctx.strokeStyle =
-        "rgba(8, 18, 12, .85)";
-
-      ctx.stroke();
 
     }
 
@@ -1036,305 +809,542 @@
 
 
   // ==========================================
-  // 14. ATUALIZAR CARTÕES DOS DEDOS
+  // DETECTOR WEBGPU
   // ==========================================
 
-  function updateFingerCard(
-    key,
-    opening,
-    servoAngle
-  ) {
+  async function loadDetector() {
 
-    const percent =
-      Math.round(opening * 100);
+    if (state.detector) {
+      return state.detector;
+    }
 
 
-    const progress =
-      $(`${key}Progress`);
+    if (!navigator.gpu) {
 
-    const openValue =
-      $(`${key}OpenValue`);
+      throw new Error(
+        "WebGPU não está disponível neste Chromebook/Chrome. Confira chrome://gpu."
+      );
 
-    const servoValue =
-      $(`${key}ServoValue`);
+    }
 
-    const status =
-      $(`${key}State`);
+
+    toast(
+      "Carregando detector WebGPU pela primeira vez…",
+      6000
+    );
+
+
+    const mod = await import(
+      CONFIG.detectorUrl
+    );
 
 
     if (
-      !progress ||
-      !openValue ||
-      !servoValue ||
-      !status
+      typeof mod.createHandpose !== "function"
     ) {
+
+      throw new Error(
+        "A biblioteca carregou, mas createHandpose não foi encontrado."
+      );
+
+    }
+
+
+    state.detector =
+      await mod.createHandpose({
+
+        maxHands: 1,
+
+        scoreThreshold: 0.55,
+
+        palmScoreThreshold: 0.55
+
+      });
+
+
+    return state.detector;
+
+  }
+
+
+  // ==========================================
+  // PROCESSAR DETECÇÃO
+  // ==========================================
+
+  function processDetection(hands, timestamp) {
+
+    const hand =
+      Array.isArray(hands) && hands.length
+
+        ? hands.reduce(
+            (best, current) =>
+              current.score > best.score
+                ? current
+                : best
+          )
+
+        : null;
+
+
+    if (
+      !hand ||
+      !Array.isArray(hand.landmarks) ||
+      hand.landmarks.length < 21
+    ) {
+
+      clearCanvas();
+
+      ui.trackingText.textContent =
+        "HAND NOT FOUND";
+
+      setCameraStatus(
+        true,
+        "CÂMERA ATIVA · SEM MÃO"
+      );
+
+      ui.pointsValue.innerHTML =
+        `— <em>/ 21</em>`;
+
+      ui.fingerState.textContent =
+        "SEM DETECÇÃO";
+
+      state.latestRawAngle = null;
+
+      updateCalibrationUI();
+
       return;
-    }
-
-
-    progress.style.width =
-      `${percent}%`;
-
-    openValue.textContent =
-      `${percent}%`;
-
-    servoValue.textContent =
-      `${servoAngle}°`;
-
-
-    status.textContent =
-      percent >= 92
-        ? "ABERTO"
-        : percent <= 8
-          ? "FECHADO"
-          : "EM MOVIMENTO";
-
-
-    status.dataset.active = "true";
-
-  }
-
-
-  // ==========================================
-  // 15. CONSTRUIR OS COMANDOS DOS SERVOS
-  // ==========================================
-
-  function buildServoValues(rawValues) {
-
-    const values = {};
-
-
-    for (const finger of ACTIVE_FINGERS) {
-
-      const filtered = smoothMetric(
-        finger.key,
-        rawValues[finger.key]
-      );
-
-
-      const opening = normalizedOpening(
-        finger.key,
-        filtered
-      );
-
-
-      values[finger.key] =
-        servoAngleFromOpening(opening);
-
-
-      updateFingerCard(
-        finger.key,
-        opening,
-        values[finger.key]
-      );
 
     }
 
 
-    return values;
-
-  }
+    drawHand(hand.landmarks);
 
 
-  function updateTelemetry(hand, rawValues) {
-
-    state.latestRaw = rawValues;
-
-
-    // Guarda as últimas leituras para a calibração.
-
-    for (const finger of ACTIVE_FINGERS) {
-
-      const list =
-        state.history[finger.key];
-
-      list.push(
-        rawValues[finger.key]
-      );
-
-      if (
-        list.length > CONFIG.historySize
-      ) {
-        list.shift();
-      }
-
-    }
+    const rawAngle =
+      calculateIndexAngle(hand.landmarks);
 
 
-    state.latestServo =
-      buildServoValues(rawValues);
+    ui.pointsValue.innerHTML =
+      `21 <em>/ 21</em>`;
+
+    ui.trackingText.textContent =
+      "HAND DETECTED";
+
+    setCameraStatus(
+      true,
+      "MÃO DETECTADA"
+    );
 
 
-    ui.landmarkCount.innerHTML =
-      `21<small>/ 21</small>`;
-
-
-    ui.confidenceValue.innerHTML =
-      `${Math.round((hand.score ?? 0) * 100)}<small>%</small>`;
-
-
-    updateCalibrationUI();
-
-    maybeSendServoValues(
-      state.latestServo
+    updateServoTarget(
+      rawAngle,
+      timestamp
     );
 
   }
 
 
   // ==========================================
-  // 16. CAPTURAR MÃO ABERTA OU FECHADA
+  // SINCRONIZAÇÃO COM A CÂMERA
   // ==========================================
 
-  function capturePose(which) {
+  // Solicitamos o próximo quadro somente depois de terminar
+  // o processamento atual. Assim não acumulamos quadros atrasados.
 
-    if (!state.latestRaw) {
+  function requestNextFrame() {
 
-      showToast(
-        "A câmera ainda não detectou uma mão."
-      );
-
-      return;
-
-    }
-
-
-    const captured = {};
-
-
-    for (const finger of ACTIVE_FINGERS) {
-
-      const samples =
-        state.history[finger.key];
-
-
-      if (!samples.length) {
-
-        showToast(
-          "Ainda não há amostras suficientes. Mantenha a mão visível por um instante."
-        );
-
-        return;
-
-      }
-
-
-      captured[finger.key] =
-        samples.reduce(
-          (sum, value) => sum + value,
-          0
-        ) / samples.length;
-
-    }
-
-
-    state.calibration[which] =
-      captured;
-
-
-    saveCalibration();
-
-    updateCalibrationUI();
+    if (!state.cameraRunning) return;
 
 
     if (
-      state.calibration.closed &&
-      state.calibration.open &&
-      !isCalibrated()
+      typeof ui.video.requestVideoFrameCallback === "function"
     ) {
 
-      showToast(
-        "As poses ficaram muito parecidas. Refaça: primeiro feche bem a mão, depois abra completamente.",
-        5200
-      );
+      state.frameCallbackId =
+        ui.video.requestVideoFrameCallback(
+          onVideoFrame
+        );
 
     } else {
 
-      showToast(
-        which === "closed"
-          ? "Referência de mão fechada registrada."
-          : "Referência de mão aberta registrada."
-      );
-
-    }
-
-
-    if (state.latestRaw) {
-
-      state.smoothed =
-        mapByActiveFinger(() => null);
-
-      state.latestServo =
-        buildServoValues(state.latestRaw);
+      state.fallbackFrameId =
+        requestAnimationFrame(
+          onFallbackFrame
+        );
 
     }
 
   }
 
 
-  function resetCalibration() {
+  async function runInference(timestamp) {
 
-    state.calibration = {
-      closed: null,
-      open: null
-    };
+    if (
+      !state.cameraRunning ||
+      state.inferenceBusy ||
+      ui.video.readyState < 2
+    ) {
+      return;
+    }
 
 
-    state.smoothed =
-      mapByActiveFinger(() => null);
-
-
-    state.history =
-      mapByActiveFinger(() => []);
+    state.inferenceBusy = true;
 
 
     try {
 
-      localStorage.removeItem(
-        CONFIG.calibrationStorageKey
+      // Uma única inferência em execução por vez.
+      const hands =
+        await state.detector.detect(
+          ui.video
+        );
+
+
+      const end = performance.now();
+
+
+      processDetection(
+        hands,
+        end
       );
 
-    } catch (_) {}
 
+      // FPS real entre quadros processados.
+      if (state.lastFrameTimestamp !== null) {
+
+        const interval =
+          timestamp - state.lastFrameTimestamp;
+
+        if (
+          interval > 0 &&
+          interval < 1000
+        ) {
+
+          state.fpsIntervals.push(interval);
+
+          if (state.fpsIntervals.length > 12) {
+            state.fpsIntervals.shift();
+          }
+
+        }
+
+      }
+
+
+      state.lastFrameTimestamp =
+        timestamp;
+
+
+      if (state.fpsIntervals.length) {
+
+        const avgInterval =
+          state.fpsIntervals.reduce(
+            (sum, ms) => sum + ms,
+            0
+          ) / state.fpsIntervals.length;
+
+
+        ui.fpsText.textContent =
+          `${Math.round(1000 / avgInterval)} FPS`;
+
+      }
+
+
+    } catch (error) {
+
+      console.error(
+        "Erro de inferência:",
+        error
+      );
+
+      toast(
+        `Falha no rastreamento: ${error.message}`,
+        6000
+      );
+
+      stopCamera();
+
+      return;
+
+    } finally {
+
+      state.inferenceBusy = false;
+
+    }
+
+
+    requestNextFrame();
+
+  }
+
+
+  function onVideoFrame(now) {
+
+    runInference(now);
+
+  }
+
+
+  function onFallbackFrame(now) {
+
+    if (!state.cameraRunning) return;
+
+
+    if (
+      ui.video.currentTime !==
+      state.lastFallbackVideoTime
+    ) {
+
+      state.lastFallbackVideoTime =
+        ui.video.currentTime;
+
+      runInference(now);
+
+    } else {
+
+      state.fallbackFrameId =
+        requestAnimationFrame(
+          onFallbackFrame
+        );
+
+    }
+
+  }
+
+
+  // ==========================================
+  // INICIAR E PARAR CÂMERA
+  // ==========================================
+
+  async function startCamera() {
+
+    if (state.cameraRunning) {
+
+      stopCamera();
+
+      return;
+
+    }
+
+
+    if (
+      !navigator.mediaDevices?.getUserMedia
+    ) {
+
+      toast(
+        "A câmera exige localhost ou HTTPS.",
+        5000
+      );
+
+      return;
+
+    }
+
+
+    ui.cameraButton.disabled = true;
+
+    ui.cameraButton.textContent =
+      "INICIALIZANDO…";
+
+
+    try {
+
+      state.stream =
+        await navigator.mediaDevices.getUserMedia({
+
+          audio: false,
+
+          video: {
+
+            width: {
+              ideal: CONFIG.cameraWidth
+            },
+
+            height: {
+              ideal: CONFIG.cameraHeight
+            },
+
+            frameRate: {
+              ideal: CONFIG.cameraFps,
+              max: CONFIG.cameraFps
+            },
+
+            facingMode: "user"
+
+          }
+
+        });
+
+
+      ui.video.srcObject =
+        state.stream;
+
+      await ui.video.play();
+
+
+      await loadDetector();
+
+
+      state.cameraRunning = true;
+
+      state.fpsIntervals = [];
+
+      state.lastFrameTimestamp = null;
+
+      state.lastInferenceTime = 0;
+
+      state.filteredOpening = null;
+
+
+      ui.placeholder.classList.add(
+        "hidden"
+      );
+
+
+      ui.cameraButton.textContent =
+        "PARAR CÂMERA";
+
+
+      setCameraStatus(
+        true,
+        "CÂMERA ATIVA · PROCURANDO MÃO"
+      );
+
+
+      updateCalibrationUI();
+
+      requestNextFrame();
+
+
+    } catch (error) {
+
+      console.error(
+        "Erro ao iniciar câmera:",
+        error
+      );
+
+
+      stopCamera();
+
+
+      toast(
+        `Não foi possível iniciar a câmera: ${error.message}`,
+        6500
+      );
+
+
+    } finally {
+
+      ui.cameraButton.disabled = false;
+
+      if (!state.cameraRunning) {
+
+        ui.cameraButton.textContent =
+          "INICIAR CÂMERA";
+
+      }
+
+    }
+
+  }
+
+
+  function stopCamera() {
+
+    state.cameraRunning = false;
+
+
+    if (
+      state.frameCallbackId !== null &&
+      typeof ui.video.cancelVideoFrameCallback === "function"
+    ) {
+
+      ui.video.cancelVideoFrameCallback(
+        state.frameCallbackId
+      );
+
+    }
+
+
+    if (state.fallbackFrameId !== null) {
+
+      cancelAnimationFrame(
+        state.fallbackFrameId
+      );
+
+    }
+
+
+    state.frameCallbackId = null;
+    state.fallbackFrameId = null;
+
+
+    if (state.stream) {
+
+      state.stream
+        .getTracks()
+        .forEach((track) => track.stop());
+
+      state.stream = null;
+
+    }
+
+
+    ui.video.srcObject = null;
+
+
+    ui.placeholder.classList.remove(
+      "hidden"
+    );
+
+
+    ui.cameraButton.textContent =
+      "INICIAR CÂMERA";
+
+
+    ui.fpsText.textContent = "— FPS";
+
+    ui.pointsValue.innerHTML =
+      `— <em>/ 21</em>`;
+
+    ui.openingValue.innerHTML =
+      `—<em>%</em>`;
+
+    ui.servoValue.innerHTML =
+      `—<em>°</em>`;
+
+    ui.openingBar.style.width = "0%";
+
+    ui.fingerState.textContent =
+      "AGUARDANDO DETECÇÃO";
+
+    ui.trackingText.textContent =
+      "NO TRACKING";
+
+
+    setCameraStatus(
+      false,
+      "CÂMERA DESLIGADA"
+    );
+
+
+    clearCanvas();
 
     updateCalibrationUI();
 
-
-    showToast(
-      "Calibração apagada. Registre novamente a mão fechada e a mão aberta."
-    );
-
   }
 
 
   // ==========================================
-  // 17. COMUNICAÇÃO SERIAL
+  // ENVIO SERIAL SEM FILA DE COMANDOS ANTIGOS
   // ==========================================
 
-  function makeSerialPacket(servoValues) {
-
-    // Ordem fixa desta primeira versão:
-    // indicador,polegar
-
-    return `${
-      ACTIVE_FINGERS.map(
-        (finger) =>
-          Math.round(
-            servoValues[finger.key] ?? 0
-          )
-      ).join(",")
-    }\n`;
-
-  }
-
-
-  function maybeSendServoValues(servoValues) {
+  function scheduleSerialWrite() {
 
     if (
-      !state.serialConnected ||
-      !state.serialWriter ||
+      !state.writer ||
       !isCalibrated() ||
-      !state.latestRaw
+      state.serialBusy
     ) {
       return;
     }
@@ -1344,136 +1354,115 @@
 
 
     if (
-      now - state.lastSerialAt <
-      1000 / CONFIG.serialRateHz
+      now - state.lastSerialTime <
+      CONFIG.serialIntervalMs
     ) {
       return;
     }
-
-
-    const values = ACTIVE_FINGERS.map(
-      (finger) =>
-        Math.round(
-          servoValues[finger.key] ?? 0
-        )
-    );
 
 
     if (
-      state.lastSentValues &&
-      values.every(
-        (value, i) =>
-          Math.abs(
-            value - state.lastSentValues[i]
-          ) < CONFIG.minimumServoChange
-      )
+      state.lastSentAngle !== null &&
+      Math.abs(
+        state.latestServoTarget -
+        state.lastSentAngle
+      ) < CONFIG.minimumServoChange
     ) {
       return;
     }
 
 
-    state.lastSerialAt = now;
+    // Somente uma escrita pode ficar em andamento.
+    // Se houver atraso, usamos o ângulo mais recente,
+    // sem enviar os comandos antigos acumulados.
 
-    state.lastSentValues = [...values];
+    state.serialBusy = true;
 
-
-    const packet =
-      makeSerialPacket(servoValues);
-
-
-    // Fila para impedir escritas simultâneas na USB.
-
-    state.serialQueue =
-      state.serialQueue
-
-        .then(async () => {
-
-          if (
-            !state.serialWriter ||
-            !state.serialConnected
-          ) {
-            return;
-          }
+    state.lastSerialTime = now;
 
 
-          await state.serialWriter.write(
-            new TextEncoder().encode(packet)
-          );
+    const angleToSend =
+      state.latestServoTarget;
+
+    const writerAtStart =
+      state.writer;
 
 
-          ui.packetValue.textContent =
-            packet.trim();
+    writerAtStart.write(
+      new TextEncoder().encode(
+        `${angleToSend}\n`
+      )
+    )
 
-        })
+    .then(() => {
 
-        .catch((error) => {
+      if (
+        state.writer === writerAtStart
+      ) {
 
-          console.error(
-            "Erro ao transmitir dados:",
-            error
-          );
+        state.lastSentAngle =
+          angleToSend;
 
+        ui.servoValue.innerHTML =
+          `${angleToSend}<em>°</em>`;
 
-          showToast(
-            `Falha na comunicação USB: ${error.message}`
-          );
+      }
 
+    })
 
-          const failedWriter =
-            state.serialWriter;
+    .catch(async (error) => {
 
-          const failedPort =
-            state.serialPort;
+      console.error(
+        "Erro na transmissão USB:",
+        error
+      );
 
+      toast(
+        `Falha USB: ${error.message}`
+      );
 
-          state.serialWriter = null;
+      await disconnectSerial();
 
-          state.serialPort = null;
+    })
 
+    .finally(() => {
 
-          setSerialStatus(
-            false,
-            "Falha na transmissão USB"
-          );
-
-
-          if (failedWriter) {
-
-            try {
-              failedWriter.releaseLock();
-            } catch (_) {}
-
-          }
+      state.serialBusy = false;
 
 
-          if (failedPort) {
+      // Caso o alvo tenha mudado enquanto a escrita estava ocupada,
+      // agenda somente o valor atual.
 
-            failedPort.close().catch(
-              () => {}
-            );
+      if (
+        state.writer &&
+        state.latestServoTarget !==
+        state.lastSentAngle
+      ) {
 
-          }
+        setTimeout(
+          scheduleSerialWrite,
+          CONFIG.serialIntervalMs
+        );
 
-        });
+      }
+
+    });
 
   }
 
 
   // ==========================================
-  // 18. CONECTAR ARDUINO
+  // CONEXÃO USB
   // ==========================================
 
   async function connectSerial() {
 
-    if (!("serial" in navigator)) {
+    if (!navigator.serial) {
 
-      showToast(
-        "Web Serial não está disponível neste navegador. Use o Chrome atualizado em localhost ou HTTPS.",
-        5200
+      toast(
+        "Web Serial não disponível. Use Google Chrome em localhost.",
+        5500
       );
-
-      ui.serialStatus.textContent =
-        "Web Serial indisponível neste navegador";
 
       return;
 
@@ -1482,92 +1471,71 @@
 
     ui.connectButton.disabled = true;
 
-    ui.serialStatus.textContent =
-      "Selecione a porta do Arduino...";
-
-
-    let openedPort = null;
-
-    let openedWriter = null;
-
 
     try {
 
-      openedPort =
+      const port =
         await navigator.serial.requestPort();
 
 
-      await openedPort.open({
+      await port.open({
         baudRate: CONFIG.baudRate
       });
 
 
-      openedWriter =
-        openedPort.writable.getWriter();
+      const writer =
+        port.writable.getWriter();
 
 
-      // Algumas placas reiniciam ao abrir a porta serial.
+      state.port = port;
 
-      await new Promise(
-        (resolve) => setTimeout(resolve, 1400)
-      );
+      state.writer = writer;
 
+      state.lastSentAngle = null;
 
-      state.serialPort = openedPort;
-
-      state.serialWriter = openedWriter;
-
-      state.lastSentValues = null;
-
-      state.lastSerialAt = 0;
+      state.lastSerialTime = 0;
 
 
-      setSerialStatus(
+      setUsbStatus(
         true,
         "Arduino conectado · aguardando calibração"
       );
 
 
-      showToast(
-        "Arduino conectado. Os comandos serão enviados após a calibração."
+      toast(
+        "Arduino conectado. O indicador começa a receber comandos após a calibração."
       );
+
+
+      if (
+        state.latestRawAngle !== null &&
+        isCalibrated()
+      ) {
+
+        scheduleSerialWrite();
+
+      }
 
 
     } catch (error) {
 
       console.error(
-        "Falha na conexão serial:",
+        "Erro ao conectar Arduino:",
         error
       );
 
 
-      if (openedWriter) {
-
-        try {
-          openedWriter.releaseLock();
-        } catch (_) {}
-
-      }
-
-
-      if (openedPort) {
-
-        try {
-          await openedPort.close();
-        } catch (_) {}
-
-      }
-
-
-      ui.serialStatus.textContent =
+      setUsbStatus(
+        false,
         error.name === "NotFoundError"
           ? "Nenhuma porta selecionada"
-          : "Falha na conexão USB";
+          : "Falha na conexão USB"
+      );
 
 
       if (error.name !== "NotFoundError") {
 
-        showToast(
+        toast(
           `Não foi possível conectar: ${error.message}`
         );
 
@@ -1582,30 +1550,21 @@
   }
 
 
-  // ==========================================
-  // 19. DESCONECTAR ARDUINO
-  // ==========================================
-
   async function disconnectSerial() {
 
-    const writer =
-      state.serialWriter;
+    const writer = state.writer;
 
-    const port =
-      state.serialPort;
+    const port = state.port;
 
 
-    state.serialWriter = null;
+    state.writer = null;
 
-    state.serialPort = null;
+    state.port = null;
 
-    state.lastSentValues = null;
+    state.lastSentAngle = null;
 
 
     try {
-
-      await state.serialQueue;
-
 
       if (writer) {
 
@@ -1626,621 +1585,67 @@
 
     } finally {
 
-      setSerialStatus(
+      setUsbStatus(
         false,
         "Nenhum dispositivo conectado"
       );
 
-
-      ui.packetValue.textContent = "—";
-
     }
 
   }
 
 
   // ==========================================
-  // 20. CARREGAR O DETECTOR WEBGPU
+  // SLIDER DE ABERTURA
   // ==========================================
 
-  async function loadDetector() {
+  function updateSlider() {
 
-    if (state.detector) {
-      return state.detector;
-    }
+    state.maxOpenAngle =
+      Number(ui.slider.value);
 
 
-    if (!navigator.gpu) {
+    ui.maxAngleLabel.textContent =
+      `${state.maxOpenAngle}°`;
 
-      throw new Error(
-        "Este Chrome não disponibilizou WebGPU. Verifique a atualização do Chrome e a compatibilidade gráfica do Chromebook."
-      );
 
-    }
+    const percent =
+      (state.maxOpenAngle - CONFIG.minOpenAngle) /
+      (CONFIG.maxAllowedAngle - CONFIG.minOpenAngle) * 100;
 
 
-    const adapter =
-      await navigator.gpu.requestAdapter();
+    ui.slider.style.background =
+      `linear-gradient(
+        90deg,
+        var(--accent) 0 ${percent}%,
+        rgba(226,239,225,.13) ${percent}% 100%
+      )`;
 
 
-    if (!adapter) {
+    if (state.filteredOpening !== null) {
 
-      throw new Error(
-        "O navegador tem a API WebGPU, mas não encontrou um adaptador gráfico compatível."
-      );
-
-    }
-
-
-    showToast(
-      "Carregando o rastreador de mão WebGPU (primeiro uso pode demorar)...",
-      6000
-    );
-
-
-    // Importação dinâmica:
-    // não impede os botões da interface de funcionarem.
-
-    const module =
-      await import(CONFIG.detectorModuleUrl);
-
-
-    if (
-      typeof module.createHandpose !== "function"
-    ) {
-
-      throw new Error(
-        "A biblioteca de rastreamento carregou, mas createHandpose não foi encontrado."
-      );
-
-    }
-
-
-    state.detector =
-      await module.createHandpose({
-
-        maxHands: 1,
-
-        scoreThreshold: 0.55,
-
-        palmScoreThreshold: 0.55
-
-      });
-
-
-    return state.detector;
-
-  }
-
-
-  // ==========================================
-  // 21. INICIAR CÂMERA
-  // ==========================================
-
-  async function startCamera() {
-
-    if (state.cameraRunning) {
-
-      stopCamera();
-
-      return;
-
-    }
-
-
-    if (
-      !navigator.mediaDevices?.getUserMedia
-    ) {
-
-      showToast(
-        "A câmera exige localhost ou HTTPS e permissão do navegador.",
-        5200
-      );
-
-      return;
-
-    }
-
-
-    ui.cameraButton.disabled = true;
-
-    ui.cameraButton.querySelector("span").textContent =
-      "INICIALIZANDO...";
-
-
-    setCameraStatus(
-      false,
-      "PREPARANDO RASTREADOR"
-    );
-
-
-    try {
-
-      // Primeiro solicita a câmera.
-
-      state.cameraStream =
-        await navigator.mediaDevices.getUserMedia({
-
-          audio: false,
-
-          video: {
-
-            width: {
-              ideal: CONFIG.cameraWidth
-            },
-
-            height: {
-              ideal: CONFIG.cameraHeight
-            },
-
-            frameRate: {
-              ideal: CONFIG.targetInferenceFps,
-              max: 30
-            },
-
-            facingMode: "user"
-
-          }
-
-        });
-
-
-      ui.video.srcObject =
-        state.cameraStream;
-
-
-      await ui.video.play();
-
-
-      // Depois carrega o detector.
-
-      await loadDetector();
-
-
-      state.cameraRunning = true;
-
-      state.lastInferenceAt = 0;
-
-      state.fpsFrames = 0;
-
-      state.fpsStartedAt =
-        performance.now();
-
-
-      ui.cameraPlaceholder.classList.add(
-        "hidden"
-      );
-
-
-      ui.cameraButton.querySelector("span").textContent =
-        "PARAR CÂMERA";
-
-
-      setCameraStatus(
-        true,
-        "CÂMERA ATIVA · PROCURANDO MÃO"
-      );
-
-
-      ui.trackingReadout.textContent =
-        "SCANNING HAND";
-
-
-      updateCalibrationUI();
-
-
-      cameraLoop();
-
-
-    } catch (error) {
-
-      console.error(
-        "Falha ao iniciar rastreamento:",
-        error
-      );
-
-
-      stopCamera();
-
-
-      showToast(
-        `Não foi possível iniciar: ${error.message}`,
-        6500
-      );
-
-    } finally {
-
-      ui.cameraButton.disabled = false;
-
-
-      ui.cameraButton.querySelector("span").textContent =
-        state.cameraRunning
-          ? "PARAR CÂMERA"
-          : "INICIAR CÂMERA";
-
-    }
-
-  }
-
-
-  // ==========================================
-  // 22. LOOP DA CÂMERA
-  // ==========================================
-
-  async function cameraLoop() {
-
-    if (!state.cameraRunning) {
-      return;
-    }
-
-
-    const now = performance.now();
-
-
-    const interval =
-      1000 / CONFIG.targetInferenceFps;
-
-
-    if (
-
-      !state.inferenceBusy &&
-
-      ui.video.readyState >= 2 &&
-
-      now - state.lastInferenceAt >= interval
-
-    ) {
-
-      state.inferenceBusy = true;
-
-      state.lastInferenceAt = now;
-
-
-      try {
-
-        const hands =
-          await state.detector.detect(
-            ui.video
-          );
-
-
-        const hand =
-          Array.isArray(hands) && hands.length
-
-            ? hands.reduce(
-                (best, current) =>
-                  (current.score ?? 0) >
-                  (best.score ?? 0)
-                    ? current
-                    : best
-              )
-
-            : null;
-
-
-        if (
-
-          hand &&
-
-          Array.isArray(hand.landmarks) &&
-
-          hand.landmarks.length >= 21
-
-        ) {
-
-          drawHand(hand.landmarks);
-
-
-          const raw =
-            collectRawMetrics(
-              hand.landmarks
-            );
-
-
-          updateTelemetry(
-            hand,
-            raw
-          );
-
-
-          ui.trackingReadout.textContent =
-            "HAND DETECTED";
-
-
-          setCameraStatus(
-            true,
-            "MÃO DETECTADA"
-          );
-
-
-          state.fpsFrames += 1;
-
-
-        } else {
-
-          clearCanvas();
-
-
-          ui.trackingReadout.textContent =
-            "HAND NOT FOUND";
-
-
-          setCameraStatus(
-            true,
-            "CÂMERA ATIVA · SEM MÃO"
-          );
-
-
-          state.latestRaw = null;
-
-
-          ui.landmarkCount.innerHTML =
-            `—<small>/ 21</small>`;
-
-
-          ui.confidenceValue.innerHTML =
-            `—<small>%</small>`;
-
-
-          updateCalibrationUI();
-
-
-          for (const finger of ACTIVE_FINGERS) {
-
-            const status =
-              $(`${finger.key}State`);
-
-
-            if (status) {
-
-              status.textContent =
-                "SEM MÃO";
-
-              status.dataset.active =
-                "false";
-
-            }
-
-          }
-
-
-          // Sem mão detectada, não envia zero.
-          // Os servos mantêm o último comando recebido.
-
-        }
-
-
-      } catch (error) {
-
-        console.error(
-          "Erro ao detectar landmarks:",
-          error
+      state.latestServoTarget =
+        Math.round(
+          state.filteredOpening *
+          state.maxOpenAngle
         );
 
 
-        showToast(
-          `Erro no rastreamento: ${error.message}`,
-          5000
-        );
-
-
-        stopCamera();
-
-        return;
-
-      } finally {
-
-        state.inferenceBusy = false;
-
-      }
-
-    }
-
-
-    if (
-      now - state.fpsStartedAt >= 1000
-    ) {
-
-      state.currentFps =
-        state.fpsFrames;
-
-
-      ui.fpsReadout.textContent =
-        `${state.currentFps} FPS`;
-
-
-      state.fpsFrames = 0;
-
-      state.fpsStartedAt = now;
-
-    }
-
-
-    state.animationFrame =
-      requestAnimationFrame(cameraLoop);
-
-  }
-
-
-  // ==========================================
-  // 23. PARAR CÂMERA
-  // ==========================================
-
-  function stopCamera() {
-
-    state.cameraRunning = false;
-
-
-    if (state.animationFrame) {
-
-      cancelAnimationFrame(
-        state.animationFrame
+      updateReadouts(
+        state.filteredOpening,
+        state.latestServoTarget
       );
 
-    }
 
-
-    state.animationFrame = null;
-
-
-    if (state.cameraStream) {
-
-      state.cameraStream
-        .getTracks()
-        .forEach((track) => track.stop());
-
-      state.cameraStream = null;
+      scheduleSerialWrite();
 
     }
-
-
-    ui.video.srcObject = null;
-
-    state.latestRaw = null;
-
-
-    ui.cameraPlaceholder.classList.remove(
-      "hidden"
-    );
-
-
-    ui.cameraButton.querySelector("span").textContent =
-      "INICIAR CÂMERA";
-
-
-    setCameraStatus(
-      false,
-      "CÂMERA DESLIGADA"
-    );
-
-
-    ui.trackingReadout.textContent =
-      "NO TRACKING";
-
-
-    ui.fpsReadout.textContent =
-      "-- FPS";
-
-
-    ui.landmarkCount.innerHTML =
-      `—<small>/ 21</small>`;
-
-
-    ui.confidenceValue.innerHTML =
-      `—<small>%</small>`;
-
-
-    clearCanvas();
-
-
-    for (const finger of ACTIVE_FINGERS) {
-
-      const status =
-        $(`${finger.key}State`);
-
-
-      if (status) {
-
-        status.textContent =
-          "SEM LEITURA";
-
-        status.dataset.active =
-          "false";
-
-      }
-
-    }
-
-
-    updateCalibrationUI();
-
-    updateSystemState();
 
   }
 
 
   // ==========================================
-  // 24. CRIAR OS CARTÕES DOS DEDOS
-  // ==========================================
-
-  function renderFingerCards() {
-
-    ui.channelCountValue.textContent =
-      String(ACTIVE_FINGERS.length).padStart(2, "0");
-
-
-    ui.fingerList.innerHTML =
-      ACTIVE_FINGERS.map((finger) => {
-
-        const symbolClass =
-          finger.key === "thumb"
-            ? "thumb-symbol"
-            : "index-symbol";
-
-
-        return `
-
-          <div
-            class="finger-channel"
-            data-finger="${finger.key}"
-          >
-
-            <div class="finger-head">
-
-              <div class="finger-title">
-
-                <span class="finger-symbol ${symbolClass}"></span>
-
-                <strong>${finger.label}</strong>
-
-              </div>
-
-
-              <span
-                class="finger-state"
-                id="${finger.key}State"
-              >
-                SEM LEITURA
-              </span>
-
-            </div>
-
-
-            <div class="progress-track">
-
-              <div
-                class="progress-fill"
-                id="${finger.key}Progress"
-              ></div>
-
-            </div>
-
-
-            <div class="finger-values">
-
-              <span>
-                ABERTURA
-                <b id="${finger.key}OpenValue">—%</b>
-              </span>
-
-              <span>
-                SERVO
-                <b id="${finger.key}ServoValue">0°</b>
-              </span>
-
-            </div>
-
-          </div>
-
-        `;
-
-      }).join("");
-
-  }
-
-
-  // ==========================================
-  // 25. RELÓGIO
+  // RELÓGIO
   // ==========================================
 
   function updateClock() {
@@ -2259,13 +1664,10 @@
 
 
   // ==========================================
-  // 26. EVENTOS DOS BOTÕES
+  // EVENTOS
   // ==========================================
 
   function bindEvents() {
-
-    // Os eventos são registrados antes de qualquer
-    // carregamento de biblioteca externa.
 
     ui.cameraButton.addEventListener(
       "click",
@@ -2285,54 +1687,27 @@
     );
 
 
-    ui.captureClosedButton.addEventListener(
+    ui.captureClosed.addEventListener(
       "click",
       () => capturePose("closed")
     );
 
 
-    ui.captureOpenButton.addEventListener(
+    ui.captureOpen.addEventListener(
       "click",
       () => capturePose("open")
     );
 
 
-    ui.resetCalibrationButton.addEventListener(
+    ui.resetCalibration.addEventListener(
       "click",
       resetCalibration
     );
 
 
-    ui.maxAngleSlider.addEventListener(
+    ui.slider.addEventListener(
       "input",
-      (event) => {
-
-        state.maxOpenAngle =
-          Number(event.target.value);
-
-
-        ui.maxAngleLabel.textContent =
-          `${state.maxOpenAngle}°`;
-
-
-        updateSliderFill();
-
-
-        if (state.latestRaw) {
-
-          state.latestServo =
-            buildServoValues(
-              state.latestRaw
-            );
-
-
-          maybeSendServoValues(
-            state.latestServo
-          );
-
-        }
-
-      }
+      updateSlider
     );
 
 
@@ -2340,9 +1715,9 @@
       "beforeunload",
       () => {
 
-        if (state.cameraStream) {
+        if (state.stream) {
 
-          state.cameraStream
+          state.stream
             .getTracks()
             .forEach((track) => track.stop());
 
@@ -2362,59 +1737,26 @@
 
 
   // ==========================================
-  // 27. ATUALIZAR SLIDER
-  // ==========================================
-
-  function updateSliderFill() {
-
-    const percent = (
-
-      (
-        state.maxOpenAngle -
-        CONFIG.minOpenAngle
-      ) /
-
-      (
-        CONFIG.maxOpenAngle -
-        CONFIG.minOpenAngle
-      )
-
-    ) * 100;
-
-
-    ui.maxAngleSlider.style.background =
-
-      `linear-gradient(
-        90deg,
-        var(--accent) 0 ${percent}%,
-        rgba(226,239,225,.13) ${percent}% 100%
-      )`;
-
-  }
-
-
-  // ==========================================
-  // 28. INICIALIZAÇÃO
+  // INICIALIZAÇÃO
   // ==========================================
 
   function init() {
 
-    // Verifica se todos os IDs necessários existem no HTML.
-
-    const missing =
-
-      Object.entries(ui)
-
-        .filter(([, element]) => !element)
-
-        .map(([key]) => key);
+    const missing = Object.entries(ui)
+      .filter(([, element]) => !element)
+      .map(([id]) => id);
 
 
     if (missing.length) {
 
       console.error(
-        "Elementos ausentes no HTML:",
+        "IDs ausentes no HTML:",
         missing
+      );
+
+      toast(
+        `Erro na interface: elementos ausentes (${missing.join(", ")}).`,
+        7000
       );
 
       return;
@@ -2422,13 +1764,7 @@
     }
 
 
-    renderFingerCards();
-
-
-    // Primeiro registra todos os eventos.
-
     bindEvents();
-
 
     updateClock();
 
@@ -2438,30 +1774,13 @@
     );
 
 
-    ui.disconnectButton.classList.add(
-      "hidden"
+    updateSlider();
+
+
+    setUsbStatus(
+      false,
+      "Nenhum dispositivo conectado"
     );
-
-
-    ui.captureClosedButton.disabled = true;
-
-    ui.captureOpenButton.disabled = true;
-
-
-    ui.cameraButton.disabled = false;
-
-    ui.connectButton.disabled = false;
-
-
-    ui.maxAngleSlider.value =
-      String(state.maxOpenAngle);
-
-
-    ui.maxAngleLabel.textContent =
-      `${state.maxOpenAngle}°`;
-
-
-    updateSliderFill();
 
 
     setCameraStatus(
@@ -2470,45 +1789,16 @@
     );
 
 
-    setSerialStatus(
-      false,
-      "Nenhum dispositivo conectado"
-    );
-
-
     updateCalibrationUI();
-
-    updateSystemState();
 
 
     console.info(
-      "KINETIC inicializado. Botões ativos; detector será carregado ao iniciar a câmera."
+      "KINETIC pronto: apenas indicador ativo."
     );
 
   }
 
 
-  // ==========================================
-  // 29. EXECUTAR
-  // ==========================================
-
-  try {
-
-    init();
-
-  } catch (error) {
-
-    console.error(
-      "Erro ao inicializar a interface KINETIC:",
-      error
-    );
-
-
-    showToast(
-      `Erro ao iniciar a interface: ${error.message}`,
-      8000
-    );
-
-  }
+  init();
 
 })();
