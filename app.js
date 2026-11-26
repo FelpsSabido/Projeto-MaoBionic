@@ -23,9 +23,9 @@
 
     minimumServoChange: 1,
 
-    maxOpenAngle: 70,
+    maxOpenAngle: 180,
     minOpenAngle: 10,
-    maxAllowedAngle: 120,
+    maxAllowedAngle: 180,
 
     historySize: 15,
 
