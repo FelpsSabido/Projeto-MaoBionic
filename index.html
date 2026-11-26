@@ -1,21 +1,17 @@
 
 <!DOCTYPE html>
 <html lang="pt-BR">
-
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <title>Mão Robótica</title>
+  <title>Mão Robótica - Dois Dedos</title>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 
   <style>
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -67,7 +63,6 @@
     #debug {
       color: #b2bec3;
       text-align: left;
-      white-space: pre-line;
       background: #1b2833;
       border-radius: 10px;
       padding: 12px;
@@ -92,7 +87,559 @@
     Aguardando detecção...
   </div>
 
-  <script src="script.js"></script>
+<script>
+
+// =====================================
+// ELEMENTOS
+// =====================================
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+const statusText = document.getElementById("status");
+const debugText = document.getElementById("debug");
+const connectButton = document.getElementById("connectButton");
+
+
+// =====================================
+// CONFIGURAÇÕES
+// =====================================
+
+// Suavização dos valores
+const SUAVIZACAO = 0.25;
+
+// Tempo de confirmação
+const TEMPO_CONFIRMAR = 400;
+
+// INDICADOR
+const INDICADOR_ABRIR = 0.90;
+const INDICADOR_FECHAR = 0.78;
+
+// POLEGAR
+// Valores iniciais: precisam ser conferidos no painel.
+const POLEGAR_ABRIR = 1.25;
+const POLEGAR_FECHAR = 1.05;
+
+
+// =====================================
+// ESTADOS INDEPENDENTES
+// =====================================
+
+const dedos = {
+
+  indicador: {
+    estado: null,
+    candidato: null,
+    inicio: 0,
+    valor: null
+  },
+
+  polegar: {
+    estado: null,
+    candidato: null,
+    inicio: 0,
+    valor: null
+  }
+
+};
+
+let landmarksSuaves = null;
+
+let port = null;
+let writer = null;
+
+let filaEnvio = Promise.resolve();
+
+
+// =====================================
+// DISTÂNCIA 2D
+// =====================================
+
+function distancia(a, b) {
+
+  const dx = (a.x - b.x) * video.videoWidth;
+  const dy = (a.y - b.y) * video.videoHeight;
+
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+
+// =====================================
+// DISTÂNCIA 3D
+// =====================================
+
+function distancia3D(a, b) {
+
+  const dx = (a.x - b.x) * video.videoWidth;
+  const dy = (a.y - b.y) * video.videoHeight;
+  const dz = (a.z - b.z) * video.videoWidth;
+
+  return Math.sqrt(
+    dx * dx +
+    dy * dy +
+    dz * dz
+  );
+}
+
+
+// =====================================
+// SUAVIZAÇÃO DOS LANDMARKS
+// =====================================
+
+function suavizarLandmarks(novos) {
+
+  if (!landmarksSuaves) {
+
+    landmarksSuaves = novos.map(p => ({
+      x: p.x,
+      y: p.y,
+      z: p.z
+    }));
+
+    return landmarksSuaves;
+  }
+
+  for (let i = 0; i < novos.length; i++) {
+
+    landmarksSuaves[i].x +=
+      (novos[i].x - landmarksSuaves[i].x) * SUAVIZACAO;
+
+    landmarksSuaves[i].y +=
+      (novos[i].y - landmarksSuaves[i].y) * SUAVIZACAO;
+
+    landmarksSuaves[i].z +=
+      (novos[i].z - landmarksSuaves[i].z) * SUAVIZACAO;
+  }
+
+  return landmarksSuaves;
+}
+
+
+// =====================================
+// CÁLCULO DO INDICADOR
+// =====================================
+
+function calcularIndicador(p) {
+
+  const segmento1 = distancia3D(p[5], p[6]);
+  const segmento2 = distancia3D(p[6], p[7]);
+  const segmento3 = distancia3D(p[7], p[8]);
+
+  const comprimento =
+    segmento1 + segmento2 + segmento3;
+
+  const ponta =
+    distancia3D(p[5], p[8]);
+
+  if (comprimento === 0) return null;
+
+  return ponta / comprimento;
+}
+
+
+// =====================================
+// CÁLCULO DO POLEGAR
+// =====================================
+
+function calcularPolegar(p) {
+
+  // Ponta do polegar até o pulso
+  const pontaPulso = distancia(p[4], p[0]);
+
+  // Referência: base do indicador até o pulso
+  const palma = distancia(p[5], p[0]);
+
+  if (palma === 0) return null;
+
+  return pontaPulso / palma;
+}
+
+
+// =====================================
+// SUAVIZAÇÃO DOS VALORES
+// =====================================
+
+function suavizarValor(dedo, valor) {
+
+  if (dedo.valor === null) {
+
+    dedo.valor = valor;
+
+  } else {
+
+    dedo.valor +=
+      (valor - dedo.valor) * SUAVIZACAO;
+  }
+
+  return dedo.valor;
+}
+
+
+// =====================================
+// COMUNICAÇÃO COM ARDUINO
+// =====================================
+
+function enviarArduino(comando) {
+
+  if (!writer) {
+    console.warn("Arduino ainda não conectado:", comando);
+    return;
+  }
+
+  filaEnvio = filaEnvio.then(async () => {
+
+    if (!writer) return;
+
+    try {
+
+      await writer.write(
+        new TextEncoder().encode(comando)
+      );
+
+      console.log("Comando enviado:", comando);
+
+    } catch (erro) {
+
+      console.error("Erro no envio:", erro);
+
+      statusText.textContent =
+        "Erro na comunicação com Arduino";
+    }
+
+  });
+}
+
+
+// =====================================
+// CONTROLE INDIVIDUAL DOS DEDOS
+// =====================================
+
+function controlarDedo(
+  nome,
+  valor,
+  limiteAbrir,
+  limiteFechar,
+  comandoAbrir,
+  comandoFechar
+) {
+
+  const dedo = dedos[nome];
+
+  const agora = performance.now();
+
+  let novoCandidato = null;
+
+
+  // Se está aberto, procura fechamento.
+  if (dedo.estado === "ABERTO") {
+
+    if (valor <= limiteFechar) {
+      novoCandidato = "FECHADO";
+    }
+
+  }
+
+
+  // Se está fechado, procura abertura.
+  else if (dedo.estado === "FECHADO") {
+
+    if (valor >= limiteAbrir) {
+      novoCandidato = "ABERTO";
+    }
+
+  }
+
+
+  // Primeiro reconhecimento.
+  else {
+
+    if (valor >= limiteAbrir) {
+
+      novoCandidato = "ABERTO";
+
+    } else if (valor <= limiteFechar) {
+
+      novoCandidato = "FECHADO";
+
+    }
+
+  }
+
+
+  // Meio-termo: mantém posição.
+  if (novoCandidato === null) {
+
+    dedo.candidato = null;
+    dedo.inicio = 0;
+
+    return;
+  }
+
+
+  // Novo candidato.
+  if (novoCandidato !== dedo.candidato) {
+
+    dedo.candidato = novoCandidato;
+    dedo.inicio = agora;
+
+    return;
+  }
+
+
+  // Confirma depois do tempo definido.
+  if (agora - dedo.inicio >= TEMPO_CONFIRMAR) {
+
+    if (dedo.estado !== novoCandidato) {
+
+      dedo.estado = novoCandidato;
+
+      if (novoCandidato === "ABERTO") {
+
+        enviarArduino(comandoAbrir);
+
+      } else {
+
+        enviarArduino(comandoFechar);
+
+      }
+
+    }
+
+    dedo.candidato = null;
+    dedo.inicio = 0;
+  }
+
+}
+
+
+// =====================================
+// MEDIAPIPE
+// =====================================
+
+const hands = new Hands({
+
+  locateFile: file =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+
+});
+
+
+hands.setOptions({
+
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.80,
+  minTrackingConfidence: 0.80
+
+});
+
+
+hands.onResults(results => {
+
+  if (!video.videoWidth || !video.videoHeight) return;
+
+
+  if (
+    canvas.width !== video.videoWidth ||
+    canvas.height !== video.videoHeight
+  ) {
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+  }
+
+
+  ctx.clearRect(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+
+  // Verifica se a mão está visível.
+  if (
+    !results.multiHandLandmarks ||
+    results.multiHandLandmarks.length === 0
+  ) {
+
+    landmarksSuaves = null;
+
+    dedos.indicador.valor = null;
+    dedos.polegar.valor = null;
+
+    dedos.indicador.candidato = null;
+    dedos.polegar.candidato = null;
+
+    dedos.indicador.inicio = 0;
+    dedos.polegar.inicio = 0;
+
+    statusText.textContent = "Mão não detectada";
+    debugText.textContent = "Aguardando mão...";
+
+    return;
+  }
+
+
+  const originais = results.multiHandLandmarks[0];
+
+  const p = suavizarLandmarks(originais);
+
+
+  // Desenha mão.
+  drawConnectors(
+    ctx,
+    p,
+    HAND_CONNECTIONS,
+    {
+      color: "#00FF00",
+      lineWidth: 3
+    }
+  );
+
+  drawLandmarks(
+    ctx,
+    p,
+    {
+      color: "#FFFFFF",
+      lineWidth: 1,
+      radius: 4
+    }
+  );
+
+
+  // Calcula cada dedo.
+  const valorIndicador = calcularIndicador(p);
+  const valorPolegar = calcularPolegar(p);
+
+  if (
+    valorIndicador === null ||
+    valorPolegar === null
+  ) return;
+
+
+  const indicador =
+    suavizarValor(dedos.indicador, valorIndicador);
+
+  const polegar =
+    suavizarValor(dedos.polegar, valorPolegar);
+
+
+  // CONTROLES SEPARADOS.
+  controlarDedo(
+    "indicador",
+    indicador,
+    INDICADOR_ABRIR,
+    INDICADOR_FECHAR,
+    "1",
+    "0"
+  );
+
+  controlarDedo(
+    "polegar",
+    polegar,
+    POLEGAR_ABRIR,
+    POLEGAR_FECHAR,
+    "A",
+    "B"
+  );
+
+
+  // Diagnóstico.
+  statusText.textContent =
+    `Indicador: ${dedos.indicador.estado || "Aguardando"} | ` +
+    `Polegar: ${dedos.polegar.estado || "Aguardando"}`;
+
+  debugText.textContent =
+    `INDICADOR: ${indicador.toFixed(3)} | ` +
+    `Estado: ${dedos.indicador.estado || "Inicial"} | ` +
+    `Candidato: ${dedos.indicador.candidato || "Nenhum"}\n\n` +
+
+    `POLEGAR: ${polegar.toFixed(3)} | ` +
+    `Estado: ${dedos.polegar.estado || "Inicial"} | ` +
+    `Candidato: ${dedos.polegar.candidato || "Nenhum"}\n\n` +
+
+    `Limites polegar: abrir acima de ${POLEGAR_ABRIR} | ` +
+    `fechar abaixo de ${POLEGAR_FECHAR}`;
+
+});
+
+
+// =====================================
+// CÂMERA
+// =====================================
+
+const camera = new Camera(video, {
+
+  onFrame: async () => {
+
+    await hands.send({
+      image: video
+    });
+
+  },
+
+  width: 1280,
+  height: 720
+
+});
+
+
+camera.start()
+
+  .then(() => {
+    statusText.textContent = "Câmera iniciada";
+  })
+
+  .catch(erro => {
+    console.error(erro);
+    statusText.textContent = "Erro ao iniciar câmera";
+  });
+
+
+// =====================================
+// CONEXÃO SERIAL
+// =====================================
+
+connectButton.addEventListener("click", async () => {
+
+  if (!("serial" in navigator)) {
+
+    statusText.textContent =
+      "Web Serial não disponível. Utilize Chrome.";
+
+    return;
+  }
+
+  try {
+
+    port = await navigator.serial.requestPort();
+
+    await port.open({
+      baudRate: 9600
+    });
+
+    writer = port.writable.getWriter();
+
+    connectButton.textContent = "Arduino conectado";
+
+    statusText.textContent =
+      "Conectado! Movimente os dois dedos.";
+
+  } catch (erro) {
+
+    console.error(erro);
+
+    statusText.textContent =
+      "Falha ao conectar Arduino";
+
+  }
+
+});
+
+</script>
 
 </body>
 </html>
