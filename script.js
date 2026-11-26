@@ -1,440 +1,548 @@
 
+// =====================================
+// ELEMENTOS
+// =====================================
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-const status = document.getElementById("status");
-const statusArduino = document.getElementById("statusArduino");
-const placeholder = document.getElementById("cameraPlaceholder");
+const statusText = document.getElementById("status");
+const debugText = document.getElementById("debug");
+const connectButton = document.getElementById("connectButton");
 
-const flexaoTexto = document.getElementById("flexao");
-const anguloTexto = document.getElementById("angulo");
-const pontosTexto = document.getElementById("pontos");
 
-const botaoConectar = document.getElementById("conectarArduino");
-const botaoDesconectar = document.getElementById("desconectarArduino");
-const botaoTeste30 = document.getElementById("teste30");
-const botaoTeste90 = document.getElementById("teste90");
-const botaoTeste150 = document.getElementById("teste150");
+// =====================================
+// CONFIGURAÇÕES
+// =====================================
 
-const conexoes = [
-  [0, 1], [1, 2], [2, 3], [3, 4],
-  [0, 5], [5, 6], [6, 7], [7, 8],
-  [0, 9], [9, 10], [10, 11], [11, 12],
-  [0, 13], [13, 14], [14, 15], [15, 16],
-  [0, 17], [17, 18], [18, 19], [19, 20],
-  [5, 9], [9, 13], [13, 17]
-];
+const SUAVIZACAO = 0.25;
+const TEMPO_CONFIRMAR = 400;
 
-const INTERVALO_ENVIO = 30;
-const MUDANCA_MINIMA = 1;
-const SUAVIZACAO = 0.45;
+// INDICADOR
+const INDICADOR_ABRIR = 0.90;
+const INDICADOR_FECHAR = 0.78;
 
-let portaSerial = null;
-let escritorSerial = null;
-let leitorSerial = null;
-let hands = null;
-let conectado = false;
-let lendoSerial = false;
-let ultimaMensagem = "";
-let ultimoEnvio = 0;
-let ultimoAnguloEnviado = null;
-let anguloSuavizado = null;
-let modoTeste = false;
+// POLEGAR
+const POLEGAR_ABRIR = 1.25;
+const POLEGAR_FECHAR = 1.05;
+
+
+// =====================================
+// ESTADOS INDEPENDENTES
+// =====================================
+
+const dedos = {
+
+  indicador: {
+    estado: null,
+    candidato: null,
+    inicio: 0,
+    valor: null
+  },
+
+  polegar: {
+    estado: null,
+    candidato: null,
+    inicio: 0,
+    valor: null
+  }
+
+};
+
+let landmarksSuaves = null;
+
+let port = null;
+let writer = null;
+
 let filaEnvio = Promise.resolve();
 
-function limitar(valor, minimo, maximo) {
-  return Math.max(minimo, Math.min(maximo, valor));
+
+// =====================================
+// DISTÂNCIA 2D
+// =====================================
+
+function distancia(a, b) {
+
+  const dx = (a.x - b.x) * video.videoWidth;
+  const dy = (a.y - b.y) * video.videoHeight;
+
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
-function atualizarBotoes() {
-  if (botaoConectar) botaoConectar.disabled = conectado;
-  if (botaoDesconectar) botaoDesconectar.disabled = !conectado;
 
-  [botaoTeste30, botaoTeste90, botaoTeste150].forEach(botao => {
-    if (botao) botao.disabled = !conectado;
-  });
-}
+// =====================================
+// DISTÂNCIA 3D
+// =====================================
 
-function desenharMao(mao) {
-  ctx.strokeStyle = "#00ff88";
-  ctx.lineWidth = 3;
+function distancia3D(a, b) {
 
-  for (const [i, j] of conexoes) {
-    ctx.beginPath();
-    ctx.moveTo(mao[i].x * canvas.width, mao[i].y * canvas.height);
-    ctx.lineTo(mao[j].x * canvas.width, mao[j].y * canvas.height);
-    ctx.stroke();
-  }
+  const dx = (a.x - b.x) * video.videoWidth;
+  const dy = (a.y - b.y) * video.videoHeight;
+  const dz = (a.z - b.z) * video.videoWidth;
 
-  mao.forEach((ponto, i) => {
-    ctx.beginPath();
-    ctx.arc(
-      ponto.x * canvas.width,
-      ponto.y * canvas.height,
-      i === 0 ? 8 : 5,
-      0,
-      Math.PI * 2
-    );
-    ctx.fillStyle = i === 0 ? "#ffcc00" : "#ffffff";
-    ctx.fill();
-  });
-}
-
-function calcularAngulo(a, b, c) {
-  const abx = a.x - b.x;
-  const aby = a.y - b.y;
-  const cbx = c.x - b.x;
-  const cby = c.y - b.y;
-
-  const denominador =
-    Math.hypot(abx, aby) * Math.hypot(cbx, cby);
-
-  if (denominador === 0) return 180;
-
-  const cos = limitar(
-    (abx * cbx + aby * cby) / denominador,
-    -1,
-    1
+  return Math.sqrt(
+    dx * dx +
+    dy * dy +
+    dz * dz
   );
-
-  return Math.acos(cos) * 180 / Math.PI;
 }
 
-function calcularAnguloIndicador(mao) {
-  const anguloArticulacao = calcularAngulo(
-    mao[5],
-    mao[6],
-    mao[7]
-  );
 
-  const proporcao = limitar(
-    (180 - anguloArticulacao) / 110,
-    0,
-    1
-  );
+// =====================================
+// SUAVIZAÇÃO DOS LANDMARKS
+// =====================================
 
-  return {
-    servo: Math.round(proporcao * 180),
-    flexao: Math.round(180 - anguloArticulacao)
-  };
-}
+function suavizarLandmarks(novos) {
 
-async function enviarMensagem(mensagem) {
-  if (!conectado || !escritorSerial) return false;
+  if (!landmarksSuaves) {
 
-  try {
-    await escritorSerial.write(
-      new TextEncoder().encode(mensagem + "\n")
-    );
+    landmarksSuaves = novos.map(p => ({
+      x: p.x,
+      y: p.y,
+      z: p.z
+    }));
 
-    if (statusArduino) {
-      statusArduino.textContent = "Comando enviado: " + mensagem;
-    }
-
-    return true;
-  } catch (erro) {
-    console.error("Erro ao enviar:", erro);
-
-    if (statusArduino) {
-      statusArduino.textContent = "Erro no envio: " + erro.message;
-    }
-
-    return false;
-  }
-}
-
-function enviarAngulo(angulo, forcar = false) {
-  if (!conectado || !escritorSerial) return Promise.resolve(false);
-  if (modoTeste && !forcar) return Promise.resolve(false);
-
-  const agora = Date.now();
-
-  if (!forcar && agora - ultimoEnvio < INTERVALO_ENVIO) {
-    return Promise.resolve(false);
+    return landmarksSuaves;
   }
 
-  if (
-    !forcar &&
-    ultimoAnguloEnviado !== null &&
-    Math.abs(angulo - ultimoAnguloEnviado) < MUDANCA_MINIMA
-  ) {
-    return Promise.resolve(false);
+  for (let i = 0; i < novos.length; i++) {
+
+    landmarksSuaves[i].x +=
+      (novos[i].x - landmarksSuaves[i].x) * SUAVIZACAO;
+
+    landmarksSuaves[i].y +=
+      (novos[i].y - landmarksSuaves[i].y) * SUAVIZACAO;
+
+    landmarksSuaves[i].z +=
+      (novos[i].z - landmarksSuaves[i].z) * SUAVIZACAO;
+
   }
 
-  const mensagem = String(angulo);
+  return landmarksSuaves;
+}
 
-  if (!forcar && mensagem === ultimaMensagem) {
-    return Promise.resolve(false);
+
+// =====================================
+// CÁLCULO DO INDICADOR
+// =====================================
+
+function calcularIndicador(p) {
+
+  const segmento1 = distancia3D(p[5], p[6]);
+  const segmento2 = distancia3D(p[6], p[7]);
+  const segmento3 = distancia3D(p[7], p[8]);
+
+  const comprimento =
+    segmento1 + segmento2 + segmento3;
+
+  const ponta = distancia3D(p[5], p[8]);
+
+  if (comprimento === 0) return null;
+
+  return ponta / comprimento;
+}
+
+
+// =====================================
+// CÁLCULO DO POLEGAR
+// =====================================
+
+function calcularPolegar(p) {
+
+  const pontaPulso = distancia(p[4], p[0]);
+
+  const palma = distancia(p[5], p[0]);
+
+  if (palma === 0) return null;
+
+  return pontaPulso / palma;
+}
+
+
+// =====================================
+// SUAVIZAÇÃO DOS VALORES
+// =====================================
+
+function suavizarValor(dedo, valor) {
+
+  if (dedo.valor === null) {
+
+    dedo.valor = valor;
+
+  } else {
+
+    dedo.valor +=
+      (valor - dedo.valor) * SUAVIZACAO;
+
   }
 
-  ultimoEnvio = agora;
-  ultimoAnguloEnviado = angulo;
-  ultimaMensagem = mensagem;
-
-  filaEnvio = filaEnvio.then(async () => {
-    return await enviarMensagem(mensagem);
-  }).catch(erro => {
-    console.error("Fila serial:", erro);
-    return false;
-  });
-
-  return filaEnvio;
+  return dedo.valor;
 }
 
-async function testarServo(angulo) {
-  if (!conectado) return;
 
-  modoTeste = true;
-  const enviado = await enviarAngulo(angulo, true);
+// =====================================
+// COMUNICAÇÃO COM ARDUINO
+// =====================================
 
-  if (enviado && statusArduino) {
-    statusArduino.textContent = `Teste do indicador: ${angulo}°`;
-  }
+function enviarArduino(comando) {
 
-  setTimeout(() => {
-    modoTeste = false;
-    anguloSuavizado = null;
-    ultimoAnguloEnviado = null;
-  }, 1000);
-}
-
-if (botaoTeste30) {
-  botaoTeste30.addEventListener("click", () => testarServo(30));
-}
-if (botaoTeste90) {
-  botaoTeste90.addEventListener("click", () => testarServo(90));
-}
-if (botaoTeste150) {
-  botaoTeste150.addEventListener("click", () => testarServo(150));
-}
-
-async function lerRespostasArduino() {
-  if (!portaSerial || !portaSerial.readable || lendoSerial) return;
-
-  lendoSerial = true;
-
-  try {
-    leitorSerial = portaSerial.readable.getReader();
-    let buffer = "";
-
-    while (conectado) {
-      const { value, done } = await leitorSerial.read();
-      if (done) break;
-      if (!value) continue;
-
-      buffer += new TextDecoder().decode(value);
-
-      const linhas = buffer.split(/\r?\n/);
-      buffer = linhas.pop() || "";
-
-      for (const linha of linhas) {
-        const resposta = linha.trim();
-        if (!resposta) continue;
-
-        console.log("Arduino:", resposta);
-
-        if (statusArduino) {
-          statusArduino.textContent = "Arduino: " + resposta;
-        }
-      }
-    }
-  } catch (erro) {
-    if (conectado) console.error(erro);
-  } finally {
-    if (leitorSerial) {
-      try {
-        leitorSerial.releaseLock();
-      } catch (_) {}
-      leitorSerial = null;
-    }
-    lendoSerial = false;
-  }
-}
-
-if (botaoConectar) {
-  botaoConectar.addEventListener("click", async () => {
-    if (!("serial" in navigator)) {
-      statusArduino.textContent = "Navegador sem suporte à conexão serial.";
-      return;
-    }
-
-    botaoConectar.disabled = true;
-
-    try {
-      statusArduino.textContent = "Selecione o Arduino...";
-
-      portaSerial = await navigator.serial.requestPort();
-      await portaSerial.open({ baudRate: 9600 });
-
-      escritorSerial = portaSerial.writable.getWriter();
-      conectado = true;
-
-      ultimoAnguloEnviado = null;
-      anguloSuavizado = null;
-      ultimaMensagem = "";
-
-      atualizarBotoes();
-      statusArduino.textContent = "Arduino conectado.";
-
-      lerRespostasArduino();
-    } catch (erro) {
-      console.error(erro);
-      statusArduino.textContent = "Erro: " + erro.message;
-      conectado = false;
-      atualizarBotoes();
-    }
-  });
-}
-
-if (botaoDesconectar) {
-  botaoDesconectar.addEventListener("click", async () => {
-    conectado = false;
-    modoTeste = false;
-
-    try {
-      if (leitorSerial) {
-        try {
-          await leitorSerial.cancel();
-        } catch (_) {}
-      }
-
-      if (escritorSerial) {
-        escritorSerial.releaseLock();
-        escritorSerial = null;
-      }
-
-      if (portaSerial) {
-        await portaSerial.close();
-        portaSerial = null;
-      }
-
-      statusArduino.textContent = "Arduino desconectado.";
-    } catch (erro) {
-      console.error(erro);
-      statusArduino.textContent = "Erro: " + erro.message;
-    } finally {
-      atualizarBotoes();
-    }
-  });
-}
-
-function aoDetectar(resultado) {
-  const largura = video.videoWidth;
-  const altura = video.videoHeight;
-
-  if (!largura || !altura) return;
-
-  if (canvas.width !== largura || canvas.height !== altura) {
-    canvas.width = largura;
-    canvas.height = altura;
-  }
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const maos = resultado.multiHandLandmarks;
-
-  if (!maos || maos.length === 0) {
-    status.textContent = "Mostre sua mão para a câmera.";
-    flexaoTexto.textContent = "--°";
-    anguloTexto.textContent = "--°";
-    pontosTexto.textContent = "0 / 21";
+  if (!writer) {
+    console.warn("Arduino ainda não conectado:", comando);
     return;
   }
 
-  const mao = maos[0];
-  desenharMao(mao);
+  filaEnvio = filaEnvio.then(async () => {
 
-  pontosTexto.textContent = `${mao.length} / 21`;
+    if (!writer) return;
 
-  const resultadoIndicador = calcularAnguloIndicador(mao);
+    try {
 
-  flexaoTexto.textContent = `${resultadoIndicador.flexao}°`;
-  anguloTexto.textContent = `${resultadoIndicador.servo}°`;
+      await writer.write(
+        new TextEncoder().encode(comando)
+      );
 
-  if (anguloSuavizado === null) {
-    anguloSuavizado = resultadoIndicador.servo;
-  } else {
-    anguloSuavizado +=
-      (resultadoIndicador.servo - anguloSuavizado) * SUAVIZACAO;
-  }
+      console.log("Comando enviado:", comando);
 
-  const anguloFinal = Math.round(anguloSuavizado);
+    } catch (erro) {
 
-  status.textContent = conectado
-    ? `Controle ativo — indicador ${anguloFinal}°.`
-    : "Mão detectada — conecte o Arduino.";
+      console.error("Erro no envio:", erro);
 
-  enviarAngulo(anguloFinal);
-}
+      statusText.textContent =
+        "Erro na comunicação com Arduino";
 
-async function iniciarMediaPipe() {
-  try {
-    if (typeof Hands === "undefined") {
-      throw new Error("A biblioteca MediaPipe não foi carregada.");
     }
 
-    hands = new Hands({
-      locateFile: arquivo =>
-        "https://cdn.jsdelivr.net/npm/@mediapipe/hands/" + arquivo
-    });
+  });
 
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.6
-    });
+}
 
-    hands.onResults(aoDetectar);
 
-    status.textContent = "Reconhecimento carregado. Mostre sua mão.";
+// =====================================
+// CONTROLE INDIVIDUAL DOS DEDOS
+// =====================================
 
-    async function analisar() {
-      if (video.readyState >= 2 && hands) {
-        try {
-          await hands.send({ image: video });
-        } catch (erro) {
-          console.error(erro);
-        }
+function controlarDedo(
+  nome,
+  valor,
+  limiteAbrir,
+  limiteFechar,
+  comandoAbrir,
+  comandoFechar
+) {
+
+  const dedo = dedos[nome];
+
+  const agora = performance.now();
+
+  let novoCandidato = null;
+
+
+  if (dedo.estado === "ABERTO") {
+
+    if (valor <= limiteFechar) {
+      novoCandidato = "FECHADO";
+    }
+
+  }
+
+  else if (dedo.estado === "FECHADO") {
+
+    if (valor >= limiteAbrir) {
+      novoCandidato = "ABERTO";
+    }
+
+  }
+
+  else {
+
+    if (valor >= limiteAbrir) {
+
+      novoCandidato = "ABERTO";
+
+    } else if (valor <= limiteFechar) {
+
+      novoCandidato = "FECHADO";
+
+    }
+
+  }
+
+
+  // Meio-termo mantém a última posição.
+  if (novoCandidato === null) {
+
+    dedo.candidato = null;
+    dedo.inicio = 0;
+
+    return;
+  }
+
+
+  if (novoCandidato !== dedo.candidato) {
+
+    dedo.candidato = novoCandidato;
+    dedo.inicio = agora;
+
+    return;
+  }
+
+
+  if (agora - dedo.inicio >= TEMPO_CONFIRMAR) {
+
+    if (dedo.estado !== novoCandidato) {
+
+      dedo.estado = novoCandidato;
+
+      if (novoCandidato === "ABERTO") {
+
+        enviarArduino(comandoAbrir);
+
+      } else {
+
+        enviarArduino(comandoFechar);
+
       }
-      requestAnimationFrame(analisar);
+
     }
 
-    analisar();
-  } catch (erro) {
-    console.error(erro);
-    status.textContent = "Erro no MediaPipe: " + erro.message;
+    dedo.candidato = null;
+    dedo.inicio = 0;
+
   }
+
 }
 
-async function iniciarCamera() {
-  try {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("A câmera exige uma página HTTPS.");
-    }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: { ideal: 640 },
-        height: { ideal: 480 },
-        facingMode: "user"
-      },
-      audio: false
+// =====================================
+// MEDIAPIPE
+// =====================================
+
+const hands = new Hands({
+
+  locateFile: file =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+
+});
+
+
+hands.setOptions({
+
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.80,
+  minTrackingConfidence: 0.80
+
+});
+
+
+hands.onResults(results => {
+
+  if (!video.videoWidth || !video.videoHeight) return;
+
+
+  if (
+    canvas.width !== video.videoWidth ||
+    canvas.height !== video.videoHeight
+  ) {
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+  }
+
+
+  ctx.clearRect(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+
+  if (
+    !results.multiHandLandmarks ||
+    results.multiHandLandmarks.length === 0
+  ) {
+
+    landmarksSuaves = null;
+
+    dedos.indicador.valor = null;
+    dedos.polegar.valor = null;
+
+    dedos.indicador.candidato = null;
+    dedos.polegar.candidato = null;
+
+    dedos.indicador.inicio = 0;
+    dedos.polegar.inicio = 0;
+
+    statusText.textContent = "Mão não detectada";
+    debugText.textContent = "Aguardando mão...";
+
+    return;
+  }
+
+
+  const originais = results.multiHandLandmarks[0];
+
+  const p = suavizarLandmarks(originais);
+
+
+  drawConnectors(
+    ctx,
+    p,
+    HAND_CONNECTIONS,
+    {
+      color: "#00FF00",
+      lineWidth: 3
+    }
+  );
+
+
+  drawLandmarks(
+    ctx,
+    p,
+    {
+      color: "#FFFFFF",
+      lineWidth: 1,
+      radius: 4
+    }
+  );
+
+
+  const valorIndicador = calcularIndicador(p);
+  const valorPolegar = calcularPolegar(p);
+
+  if (
+    valorIndicador === null ||
+    valorPolegar === null
+  ) return;
+
+
+  const indicador =
+    suavizarValor(dedos.indicador, valorIndicador);
+
+  const polegar =
+    suavizarValor(dedos.polegar, valorPolegar);
+
+
+  // INDICADOR
+  controlarDedo(
+    "indicador",
+    indicador,
+    INDICADOR_ABRIR,
+    INDICADOR_FECHAR,
+    "1",
+    "0"
+  );
+
+
+  // POLEGAR
+  controlarDedo(
+    "polegar",
+    polegar,
+    POLEGAR_ABRIR,
+    POLEGAR_FECHAR,
+    "A",
+    "B"
+  );
+
+
+  statusText.textContent =
+    `Indicador: ${dedos.indicador.estado || "Aguardando"} | ` +
+    `Polegar: ${dedos.polegar.estado || "Aguardando"}`;
+
+
+  debugText.textContent =
+    `INDICADOR: ${indicador.toFixed(3)} | ` +
+    `Estado: ${dedos.indicador.estado || "Inicial"} | ` +
+    `Candidato: ${dedos.indicador.candidato || "Nenhum"}\n\n` +
+
+    `POLEGAR: ${polegar.toFixed(3)} | ` +
+    `Estado: ${dedos.polegar.estado || "Inicial"} | ` +
+    `Candidato: ${dedos.polegar.candidato || "Nenhum"}\n\n` +
+
+    `Limites polegar: abrir acima de ${POLEGAR_ABRIR} | ` +
+    `fechar abaixo de ${POLEGAR_FECHAR}`;
+
+});
+
+
+// =====================================
+// CÂMERA
+// =====================================
+
+const camera = new Camera(video, {
+
+  onFrame: async () => {
+
+    await hands.send({
+      image: video
     });
 
-    video.srcObject = stream;
-    await video.play();
+  },
 
-    if (placeholder) placeholder.classList.add("hidden");
+  width: 1280,
+  height: 720
 
-    status.textContent = "Carregando reconhecimento da mão...";
-    iniciarMediaPipe();
-  } catch (erro) {
+});
+
+
+camera.start()
+
+  .then(() => {
+
+    statusText.textContent = "Câmera iniciada";
+
+  })
+
+  .catch(erro => {
+
     console.error(erro);
-    status.textContent = "Erro na câmera: " + erro.message;
-  }
-}
 
-atualizarBotoes();
-iniciarCamera();
+    statusText.textContent =
+      "Erro ao iniciar câmera";
+
+  });
+
+
+// =====================================
+// CONEXÃO SERIAL
+// =====================================
+
+connectButton.addEventListener("click", async () => {
+
+  if (!("serial" in navigator)) {
+
+    statusText.textContent =
+      "Web Serial não disponível. Utilize Chrome.";
+
+    return;
+  }
+
+  try {
+
+    port = await navigator.serial.requestPort();
+
+    await port.open({
+      baudRate: 9600
+    });
+
+    writer = port.writable.getWriter();
+
+    connectButton.textContent =
+      "Arduino conectado";
+
+    statusText.textContent =
+      "Conectado! Movimente os dois dedos.";
+
+  } catch (erro) {
+
+    console.error(erro);
+
+    statusText.textContent =
+      "Falha ao conectar Arduino";
+
+  }
+
+});
