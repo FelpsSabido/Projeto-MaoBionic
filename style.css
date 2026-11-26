@@ -985,3 +985,21 @@ footer {
     flex-direction: column;
   }
 }
+
+/* Dois canais independentes */
+
+.finger-channel + .finger-channel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+/* Identificação visual do polegar */
+
+.thumb-icon {
+  transform: rotate(-38deg);
+}
+
+.finger-channel .bar {
+  margin-top: 8px;
+}

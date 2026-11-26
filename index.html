@@ -140,24 +140,26 @@
 
           </article>
 
-          <div class="metrics">
+          
+<div class="metrics">
 
-            <article class="metric">
-              <small>PONTOS</small>
-              <strong id="pointsValue">— <em>/ 21</em></strong>
-            </article>
+  <article class="metric">
+    <small>PONTOS DETECTADOS</small>
+    <strong id="pointsValue">— <em>/ 21</em></strong>
+  </article>
 
-            <article class="metric">
-              <small>ABERTURA DO INDICADOR</small>
-              <strong id="openingValue">—<em>%</em></strong>
-            </article>
+  <article class="metric">
+    <small>INDICADOR · SERVO</small>
+    <strong id="indexServoMetric">0<em>°</em></strong>
+  </article>
 
-            <article class="metric">
-              <small>COMANDO DO SERVO</small>
-              <strong id="servoValue">—<em>°</em></strong>
-            </article>
+  <article class="metric">
+    <small>POLEGAR · SERVO</small>
+    <strong id="thumbServoMetric">0<em>°</em></strong>
+  </article>
 
-          </div>
+</div>
+
 
         </div>
 
@@ -204,46 +206,78 @@
             </button>
 
             <div class="protocol">
-              <span>PROTOCOLO <b>1 VALOR · NEWLINE</b></span>
+              <span>PROTOCOLO <b>2 CANAIS · CSV</b></span>
               <span>BAUD <b>9600</b></span>
             </div>
 
           </article>
 
-          <article class="panel panel-pad">
+          
+<article class="panel panel-pad">
 
-            <div class="panel-title compact">
-              <div>
-                <p class="section-index">03 / MOTION CHANNEL</p>
-                <h2>Indicador</h2>
-              </div>
+  <div class="panel-title compact">
+    <div>
+      <p class="section-index">03 / MOTION CHANNELS</p>
+      <h2>Canais ativos</h2>
+    </div>
 
-              <span class="channel-tag">ATIVO</span>
-            </div>
+    <span class="channel-tag">02 ATIVOS</span>
+  </div>
 
-            <div class="finger-readout">
+  <!-- INDICADOR -->
 
-              <div class="finger-icon">
-                <span></span>
-              </div>
+  <div class="finger-channel">
 
-              <div>
-                <strong>Indicador</strong>
-                <small id="fingerState">AGUARDANDO DETECÇÃO</small>
-              </div>
+    <div class="finger-readout">
+      <div class="finger-icon">
+        <span></span>
+      </div>
 
-            </div>
+      <div>
+        <strong>Indicador</strong>
+        <small id="indexState">AGUARDANDO DETECÇÃO</small>
+      </div>
+    </div>
 
-            <div class="bar">
-              <span id="openingBar"></span>
-            </div>
+    <div class="bar">
+      <span id="indexBar"></span>
+    </div>
 
-            <div class="bar-labels">
-              <span>FECHADO <b>0%</b></span>
-              <span>ABERTO <b>100%</b></span>
-            </div>
+    <div class="bar-labels">
+      <span>ABERTURA <b id="indexOpening">0%</b></span>
+      <span>SERVO <b id="indexServo">0°</b></span>
+    </div>
 
-          </article>
+  </div>
+
+  <!-- POLEGAR -->
+
+  <div class="finger-channel">
+
+    <div class="finger-readout">
+      <div class="finger-icon thumb-icon">
+        <span></span>
+      </div>
+
+      <div>
+        <strong>Polegar</strong>
+        <small id="thumbState">AGUARDANDO DETECÇÃO</small>
+      </div>
+    </div>
+
+    <div class="bar">
+      <span id="thumbBar"></span>
+    </div>
+
+    <div class="bar-labels">
+      <span>ABERTURA <b id="thumbOpening">0%</b></span>
+      <span>SERVO <b id="thumbServo">0°</b></span>
+    </div>
+
+  </div>
+
+</article>
+
 
           <article class="panel panel-pad">
 
