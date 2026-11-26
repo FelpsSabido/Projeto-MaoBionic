@@ -31,11 +31,11 @@
     cameraWidth: 640,
     cameraHeight: 480,
 
-    targetInferenceFps: 30,
+    targetInferenceFps: 40,
 
-    serialRateHz: 30,
+    serialRateHz: 40,
 
-    smoothing: 0.55,
+    smoothing: 0.75,
 
     minimumServoChange: 1,
 
